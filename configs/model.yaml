@@ -1,0 +1,4 @@
+provider: openai            # openai | hf | vllm
+model: gpt-4o-mini          # 또는 llama-3-8b-instruct 등
+temperature: 0.7
+max_new_tokens: 2048

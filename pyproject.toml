@@ -1,0 +1,33 @@
+[project]
+name = "graph-bot"
+version = "0.1.0"
+description = "Graph-augmented Buffer of Thoughts"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "PROFOUNDIVE" }]
+dependencies = [
+  "typer>=0.12",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.4",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "numpy>=1.25",
+  "pandas>=2.0",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+hf = ["transformers>=4.42", "sentence-transformers>=3.0", "accelerate>=0.33"]
+openai = ["openai>=1.40"]
+vllm = ["vllm>=0.5"]  # 서버 연동 시
+dev = ["pytest>=8.0", "ruff>=0.5", "black>=24.0", "pre-commit>=3.7"]
+
+[project.scripts]
+graph-bot = "graph_bot.cli:app"  # `graph-bot ...` 로 CLI 실행
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

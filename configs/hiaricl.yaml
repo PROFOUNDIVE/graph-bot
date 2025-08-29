@@ -1,0 +1,6 @@
+mcts:
+  num_rollouts: 8
+  max_depth: 6
+verification:
+  strategy: "self_consistency"   # "self_consistency" 등
+  k: 5
