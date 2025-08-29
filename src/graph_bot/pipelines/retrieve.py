@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from ..adapters.graphrag import GraphRAGAdapter
-from ..core.models import UserQuery, RetrievalResult
-from ..core.settings import settings
+from ..types import UserQuery, RetrievalResult
+from ..settings import settings
 
 
 def retrieve_k_optimal_paths(query: UserQuery) -> RetrievalResult:

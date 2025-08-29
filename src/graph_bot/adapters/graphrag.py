@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from ..core.models import (
+from ..types import (
     ReasoningTree,
     ReasoningNode,
     ReasoningEdge,
@@ -10,7 +10,7 @@ from ..core.models import (
     RetrievalResult,
     UserQuery,
 )
-from ..core.settings import settings
+from ..settings import settings
 
 
 class GraphRAGAdapter:

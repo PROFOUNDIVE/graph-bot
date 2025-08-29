@@ -1,6 +1,6 @@
 [submodule "libs/HiARICL"]
 	path = libs/HiARICL
-	url = https://github.com/PROFOUNDIVE/HiARICL
+	url = https://github.com/profoundive/hiaricl
 [submodule "libs/buffer-of-thought-llm"]
 	path = libs/buffer-of-thought-llm
 	url = https://github.com/PROFOUNDIVE/buffer-of-thought-llm

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from ..core.models import SeedData, UserQuery, LLMAnswer
+from ..types import SeedData, UserQuery, LLMAnswer
 from ..adapters.graphrag import GraphRAGAdapter
 from .build_trees import build_reasoning_trees_from_seeds
 from .retrieve import retrieve_k_optimal_paths
