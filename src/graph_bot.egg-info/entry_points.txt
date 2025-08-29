@@ -1,0 +1,2 @@
+[console_scripts]
+graph-bot = graph_bot.cli:app

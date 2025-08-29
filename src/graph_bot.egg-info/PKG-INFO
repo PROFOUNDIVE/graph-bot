@@ -1,0 +1,33 @@
+Metadata-Version: 2.4
+Name: graph-bot
+Version: 0.1.0
+Summary: Graph-augmented Buffer of Thoughts
+Author: PROFOUNDIVE
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: typer>=0.12
+Requires-Dist: pydantic>=2.7
+Requires-Dist: pydantic-settings>=2.4
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tqdm>=4.66
+Requires-Dist: numpy>=1.25
+Requires-Dist: pandas>=2.0
+Requires-Dist: rich>=13.7
+Provides-Extra: hf
+Requires-Dist: transformers>=4.42; extra == "hf"
+Requires-Dist: sentence-transformers>=3.0; extra == "hf"
+Requires-Dist: accelerate>=0.33; extra == "hf"
+Provides-Extra: openai
+Requires-Dist: openai>=1.40; extra == "openai"
+Provides-Extra: vllm
+Requires-Dist: vllm>=0.5; extra == "vllm"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+Requires-Dist: black>=24.0; extra == "dev"
+Requires-Dist: pre-commit>=3.7; extra == "dev"
+Dynamic: license-file
+
+# graph-bot
+Graph-augmented Buffer of Thoughts
