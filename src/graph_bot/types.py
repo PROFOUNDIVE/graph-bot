@@ -1,4 +1,5 @@
 from __future__ import annotations
+from __future__ import annotations
 
 from typing import List, Optional, Dict, Any
 
@@ -46,6 +47,15 @@ class ReasoningTree(BaseModel):
     provenance: Dict[str, Any] | None = None
 
 
+class MetaGraph(BaseModel):
+    """Persistent graph buffer built from multiple reasoning trees."""
+
+    graph_id: str
+    nodes: List[ReasoningNode] = Field(default_factory=list)
+    edges: List[ReasoningEdge] = Field(default_factory=list)
+    metadata: Dict[str, Any] | None = None
+
+
 class RetrievalPath(BaseModel):
     path_id: str
     node_ids: List[str]
@@ -56,6 +66,15 @@ class RetrievalResult(BaseModel):
     query_id: str
     paths: List[RetrievalPath]
     concatenated_context: str
+
+
+class PathEvaluation(BaseModel):
+    path_id: str
+    node_ids: List[str]
+    success: bool
+    tokens: Optional[int] = None
+    latency_ms: Optional[float] = None
+    cost_usd: Optional[float] = None
 
 
 class LLMAnswer(BaseModel):

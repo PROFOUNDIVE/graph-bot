@@ -1,4 +1,5 @@
 from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -9,7 +10,8 @@ import typer
 from .types import SeedData, ReasoningTree, UserQuery
 from .pipelines.build_trees import build_reasoning_trees_from_seeds
 from .adapters.graphrag import GraphRAGAdapter
-from .pipelines.main_loop import answer_with_retrieval
+from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs
+from .settings import settings
 from .logsetting import logger
 
 from vllm.entrypoints.openai.api_server import run_server  # noqa: E402
@@ -143,7 +145,7 @@ def llm_server(
     ),
     # 실행 파라미터 (sh 스크립트의 기본값을 반영)
     model_name: str = typer.Option(
-        "/home/hyunwoo/llms/Meta-Llama-3-8B-Instruct/",
+        "/home/hyunwoo/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3-8B-Instruct/snapshots/8afb486c1db24fe5011ec46dfbe5b5dccdb575c2",
         "--model",
         help="HF repo or local model path",
         rich_help_panel="Execution Parameters",
@@ -369,13 +371,11 @@ def trees_insert(
 
 @app.command("postprocess")
 def postprocess(
-    t_inputs: int = typer.Option(
-        0, "--t", help="After T inputs, run postprocessing (stub)"
-    ),
+    t_inputs: int = typer.Option(0, "--t", help="After T inputs, run postprocessing"),
 ):
-    """After T inputs, do reranking/verbalization/pruning/augmentation (stub)."""
-    # Placeholder - no-op since adapter is in-memory per process
-    typer.echo(f"Postprocess stub executed after T={t_inputs} inputs")
+    """After T inputs, do reranking/verbalization/pruning/augmentation."""
+    pruned = postprocess_after_T_inputs(t_inputs)
+    typer.echo(f"Postprocess pruned {pruned} nodes after T={t_inputs} inputs")
 
 
 @app.command("retrieve")
@@ -385,19 +385,18 @@ def retrieve(
     show_paths: bool = typer.Option(
         False, "--show-paths", help="Print retrieved paths"
     ),
+    task: Optional[str] = typer.Option(
+        None, "--task", help="Task label for retrieval metadata"
+    ),
 ):
-    """Retrieve & Instantiate per input w/ k optimal paths and answer via LLM (stub)."""
-    if k is not None:
-        # Temporarily override via environment-like setting by monkeypatching settings if needed.
-        # Kept simple: adapter.retrieve_paths takes explicit k when needed.
-        pass
-    q = UserQuery(id="q-1", question=query)
-    _adapter = GraphRAGAdapter()
-    result = _adapter.retrieve_paths(q, k=k or 3)
+    """Retrieve & Instantiate per input w/ k optimal paths and answer via LLM."""
+    metadata = {"task": task} if task else None
+    q = UserQuery(id="q-1", question=query, metadata=metadata)
+    adapter = GraphRAGAdapter()
+    result = adapter.retrieve_paths(q, k=k or settings.top_k_paths)
     if show_paths:
         typer.echo(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
-    # Produce answer text
-    answer = answer_with_retrieval(q)
+    answer = answer_with_retrieval(q, retrieval=result, adapter=adapter)
     typer.echo(answer.answer)
 
 
@@ -406,16 +405,21 @@ def loop_once(
     query: str = typer.Argument(
         ..., help="User query to answer and then generate new trees for"
     ),
+    task: Optional[str] = typer.Option(
+        None, "--task", help="Task label for query/seed metadata"
+    ),
 ):
-    """Return to 1: Input user query & k optimal paths -> Output reasoning trees (stub)."""
+    """Return to 1: Input user query & k optimal paths -> Output reasoning trees."""
+    metadata = {"task": task} if task else None
     # 1) Retrieve & answer
-    q = UserQuery(id="q-1", question=query)
-    ans = answer_with_retrieval(q)
+    q = UserQuery(id="q-1", question=query, metadata=metadata)
+    adapter = GraphRAGAdapter()
+    retrieval = adapter.retrieve_paths(q, k=settings.top_k_paths)
+    ans = answer_with_retrieval(q, retrieval=retrieval, adapter=adapter)
     typer.echo(ans.answer)
 
     # 2) Use the query as a seed to generate new trees and insert
-    seed = SeedData(id="seed-from-query", content=query)
+    seed = SeedData(id="seed-from-query", content=query, metadata=metadata)
     trees = build_reasoning_trees_from_seeds([seed])
-    _adapter = GraphRAGAdapter()
-    inserted = _adapter.insert_trees(trees)
+    inserted = adapter.insert_trees(trees)
     typer.echo(f"Generated and inserted {inserted} new trees from query")

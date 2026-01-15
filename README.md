@@ -1,76 +1,142 @@
 # graph-bot
 
-This project implements a **Graph-augmented Buffer of Thoughts**. It helps Large Language Models (LLMs) think better by using a graph structure to store and reuse "thoughts."
+Graph-augmented Buffer of Thoughts (Graph-BoT).
 
-Currently, many parts of this code are **placeholders (stubs)**. This means the structure is ready, but the real logic will be added later.
+This repository implements a **Graph-augmented Buffer of Thoughts**. The goal
+is to compare episodic reasoning (ToT/GoT) with a persistent MetaGraph-based
+memory for reuse and better long-horizon performance.
 
+Many parts are still **placeholders (stubs)**, but v0.1 includes a minimal,
+persistent MetaGraph implementation (on-disk JSON) so the end-to-end loop can be
+run and iterated on.
 
-## 1. Repository Structure
-The project is organized into several top-level folders:
+## Quickstart
 
-* **`src/`**: The main source code.
-* **`configs/`**: Files that set how the program runs (settings and templates).
-* **`libs/`**: External libraries or submodules used by the project.
-* **`tests/`**: Automated tests to check if the code works.
-* **`pyproject.toml`**: Lists the project dependencies and tools.
-* **`.env.example`**: A template for your private keys and API settings.
+```bash
+pip install -e ".[dev,hf,vllm]"
+```
 
+### Tooling Versions (Compatibility)
 
-## 2. Technical Architecture (`src/graph_bot`)
+For consistent `black`/`ruff`/`pre-commit` results across machines, install the
+versions pinned by `.pre-commit-config.yaml`:
 
-The core logic lives inside `src/graph_bot`. Below are the most important files:
+```bash
+python -m pip install "pre-commit==3.7.1" "black==24.3.0" "ruff==0.5.5"
+pre-commit run --all-files
+```
 
-### **Data Models (`types.py`)**
-This file defines how data looks using Pydantic models.
-* **`SeedData`**: The starting information used to create thoughts.
-* **`ReasoningNode` / `ReasoningEdge`**: The basic parts of a thought graph (nodes and connections).
-* **`ReasoningTree`**: A collection of nodes and edges that represent a complete thought process.
-* **`UserQuery`**: The question asked by the user.
+## CLI Pipeline (v0.1)
 
-### **Configuration (`settings.py`)**
-This file manages settings using environment variables (starting with `GRAPH_BOT_`).
-* **LLM Settings**: Choose the provider (like OpenAI) and the model name.
-* **Graph Settings**: Set the maximum depth of the thought tree and how many paths to search.
+1. **Tree generation**: `graph-bot seeds-build`
+2. **Insert into MetaGraph**: `graph-bot trees-insert`
+3. **Postprocess (prune/decay)**: `graph-bot postprocess`
+4. **Retrieve & answer**: `graph-bot retrieve`
+5. **Loop once**: `graph-bot loop-once`
 
-### **Adapters (`adapters/`)**
-Adapters connect the code to external tools.
-* **`hiaricl_adapter.py`**: A placeholder that generates "thoughts" based on seed data.
-* **`graphrag.py`**: A placeholder for storing and finding thoughts in a database (like Neo4j or SQLite).
+Example:
 
-### **Pipelines (`pipelines/`)**
-Pipelines organize the steps of the process.
-* **`build_trees.py`**: Turns seeds into reasoning trees.
-* **`retrieve.py`**: Finds the best paths in the graph to answer a question.
-* **`main_loop.py`**: Connects everything—building trees, storing them, and answering queries.
+```bash
+graph-bot seeds-build data/seeds.jsonl --out outputs/trees.json
+graph-bot trees-insert outputs/trees.json
+graph-bot postprocess --t 10
+graph-bot retrieve "2 5 8 11 → 24" --k 3 --show-paths --task game24
+```
 
-## 3. Command Line Interface (CLI)
+MetaGraph state is persisted to `outputs/metagraph.json` by default and can be
+overridden with `GRAPH_BOT_METAGRAPH_PATH`.
 
-You can run the project using the `cli.py` tool. It uses a library called **Typer**.
+## Repository Structure
 
-### **Server Management**
-* **`graph-bot llm-server start`**: Starts a vLLM server to host the AI model.
-* **`graph-bot llm-server stop`**: Stops the server.
+- `src/`: main source code
+- `configs/`: runtime configs (settings and templates)
+- `libs/`: external libraries / submodules
+- `tests/`: (currently empty) test skeletons
+- `pyproject.toml`: dependencies, scripts
+- `.env.example`: env var template
 
-### **Graph Operations**
-* **`seeds-build`**: Reads a file and creates new thought trees.
-* **`trees-insert`**: Saves trees into the graph storage.
-* **`retrieve`**: Takes a user question and finds the answer using the graph.
-* **`loop-once`**: Runs a full cycle (find answer -> create new thought -> save it).
+## Technical Architecture (`src/graph_bot`)
 
-## 4. How Data Flows
+### Data Models (`types.py`)
 
-1.  **Ingestion**: `SeedData` is sent to the **Tree Builder**.
-2.  **Generation**: The **HiAR-ICL Adapter** creates a `ReasoningTree` (placeholder thoughts).
-3.  **Storage**: The trees are saved in the **GraphRAG Adapter**.
-4.  **Query**: A user asks a question. The **Retrieval Pipeline** finds the best paths in the tree.
-5.  **Answer**: The system combines the paths and the question to create an **LLM Answer**.
+Pydantic models define the system I/O and internal representations.
 
+- `SeedData`: seed input to tree generation
+- `ReasoningNode` / `ReasoningEdge`: graph primitives
+- `ReasoningTree`: tree artifact from a single episode
+- `MetaGraph`: persistent graph buffer spanning multiple trees
+- `UserQuery`: incoming query
+- `RetrievalResult` / `RetrievalPath`: retrieval output
 
-## 5. Suggested Reading Order for Developers
+### Configuration (`settings.py`)
 
-If you are new to this code, look at the files in this order:
-1.  **`README.md`**: For the big picture and setup steps.
-2.  **`pyproject.toml`**: To see what tools the project uses.
-3.  **`src/graph_bot/types.py`**: To understand how thoughts are structured.
-4.  **`src/graph_bot/cli.py`**: To see how to run the program.
-5.  **`src/graph_bot/pipelines/`**: To see how thoughts move through the system.
+Settings are managed via environment variables prefixed with `GRAPH_BOT_`.
+Notable settings:
+
+- `GRAPH_BOT_METAGRAPH_PATH`: JSON persistence location
+- `GRAPH_BOT_TOP_K_PATHS`: retrieval top-k
+- `GRAPH_BOT_EMA_ALPHA`, `GRAPH_BOT_EMA_TAU_DAYS`: update/pruning parameters
+
+### Adapters (`adapters/`)
+
+- `hiaricl_adapter.py`: stub generator producing `ReasoningTree` from `SeedData`
+- `graphrag.py`: v0.1 persistent MetaGraph store + retrieval (semantic + stats)
+
+### Pipelines (`pipelines/`)
+
+- `build_trees.py`: seeds → reasoning trees
+- `retrieve.py`: query → retrieval result
+- `main_loop.py`: glue layer (insert, retrieve+usage, postprocess pruning)
+
+## Design Spec v0.1 (Summary)
+
+### Pipeline
+
+1. Tree generation (`HiAR-ICL` or baseline solver)
+2. Insert into MetaGraph
+3. Postprocess every T inputs (rerank/verbalize/prune/augment)
+4. Retrieve `k` optimal paths and instantiate prompt
+5. Update node/edge stats with validator/scorer feedback
+
+### Memory Schema
+
+- `ReasoningNode.type`: `thought | action | evidence | answer`
+- **Template nodes**: stored as `type="thought"` and `attributes.subtype="template"`
+- Required attributes (v0.1)
+  - `task`, `created_at`, `last_used_at`
+  - `stats`: `n_seen`, `n_used`, `n_success`, `n_fail`, `ema_success`,
+    `avg_tokens`, `avg_latency_ms`, `avg_cost_usd`
+  - `quality`: `validator_passed`, `parse_ok`
+
+### Merge & Update Rules
+
+- Dedup key: `hash(normalize(text))`
+- EMA update: `ema_success = (1-α)*ema_success + α*success`
+- Decay: `ema_success *= exp(-Δt/τ)` when unused
+- Pruning heuristic: if `n_seen >= 5` and `ema_success < 0.2`
+- Defaults: `α=0.1`, `τ=7 days`, `N_min=5`, `p_min=0.2`
+
+### Selection Policy
+
+- Stage A: semantic top-K (embedding or lexical similarity)
+- Stage B: stats rerank (`ema_success`, `avg_cost`, path length)
+
+## Week 4 Research Notes (Summary)
+
+Baseline results (Game of 24, 98 problems, `gpt-4o-mini`):
+
+| Method | Accuracy | Tokens/problem (approx) | Latency/problem | Notes |
+| --- | --- | --- | --- | --- |
+| io prompting | 8.16% | 157.95 | 1.07s | single-query |
+| CoT | 11.67% | 500.61 | 3.05s | single-query |
+| ToT (oracle) | 40.80% | 6,160.32 | 11.02s | multi-query |
+| GoT (oracle) | 69.40% | 10,256.99 | 25.04s | multi-query |
+| BoT (text-only) | 7.14% | 2,475.77 | 16.52s | MetaBuffer noise |
+| BoT (code-aug) | 41.84% | 3,385.20 | 151.13s | exec/repair loop |
+
+Key observations:
+
+- Text-only BoT underperforms due to missing validator and buffer pollution.
+- Code-augmented BoT improves accuracy but adds large latency from exec/repair.
+- Retrieval quality is critical: noisy templates dominate without validation.
+- Token/cost accounting must include both pipeline calls and RAG components.

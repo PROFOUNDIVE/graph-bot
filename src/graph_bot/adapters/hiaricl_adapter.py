@@ -1,4 +1,5 @@
 from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from typing import Iterable, List
@@ -27,6 +28,9 @@ class HiARICLAdapter:
                 ReasoningNode(node_id=root_id, text=seed.content, type="thought"),
             ]
             edges: List[ReasoningEdge] = []
+            task = None
+            if seed.metadata and "task" in seed.metadata:
+                task = str(seed.metadata["task"])
 
             current_level = [root_id]
             for depth in range(1, self.max_depth + 1):
@@ -49,13 +53,16 @@ class HiARICLAdapter:
                         next_level.append(node_id)
                 current_level = next_level
 
+            provenance = {"seed_id": seed.id, "adapter": "HiARICLAdapter"}
+            if task:
+                provenance["task"] = task
             trees.append(
                 ReasoningTree(
                     tree_id=tree_id,
                     root_id=root_id,
                     nodes=nodes,
                     edges=edges,
-                    provenance={"seed_id": seed.id, "adapter": "HiARICLAdapter"},
+                    provenance=provenance,
                 )
             )
 
