@@ -23,6 +23,11 @@ class StreamCallMetrics(BaseModel):
     api_cost_usd: float | None = None
     error_type: str | None = None
 
+    raw_output: str | None = None
+    candidate_line: str | None = None
+    normalization: str | None = None
+    precheck_failure_reason: str | None = None
+
 
 class StreamProblemMetrics(BaseModel):
     t: int

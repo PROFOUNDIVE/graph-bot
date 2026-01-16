@@ -259,6 +259,38 @@ def _insert_solution_template(
     adapter.insert_trees([tree])
 
 
+def _normalize_candidate_line(raw_output: str) -> tuple[str, str]:
+    raw = raw_output.strip()
+    lines = [line.strip() for line in raw.splitlines()]
+    for line in lines:
+        if line:
+            return line, "first_non_empty_line"
+    return "", "empty"
+
+
+def _precheck_candidate(
+    *,
+    candidate_line: str,
+    allowed_numbers: list[int],
+) -> str | None:
+    import re
+
+    if not candidate_line:
+        return "empty_output"
+
+    if "→" in candidate_line or "=" in candidate_line:
+        return "format_error"
+
+    if re.search(r"[^0-9\s\(\)\+\-\*/]", candidate_line):
+        return "illegal_tokens"
+
+    number_tokens = [int(x) for x in re.findall(r"\d+", candidate_line)]
+    if sorted(number_tokens) != sorted(allowed_numbers):
+        return "wrong_numbers"
+
+    return None
+
+
 def _solve_with_retries(
     *,
     query: UserQuery,
@@ -298,6 +330,7 @@ def _solve_with_retries(
     )
 
     last_reason: str | None = None
+    last_raw_output: str | None = None
     last_answer_text = ""
     attempts_used = 0
 
@@ -311,9 +344,18 @@ def _solve_with_retries(
 
         retry_line = ""
         if attempt_index > 1 and last_reason:
+            prev = (last_raw_output or "").strip()
             retry_line = (
-                f"Previous attempt invalid because: {last_reason}. "
-                "Return ONLY a corrected expression.\n\n"
+                "Previous attempt was invalid.\n"
+                f"Reason: {last_reason}\n"
+                f"Previous raw output (verbatim):\n{prev}\n\n"
+                "Fix it and return ONLY a corrected expression.\n"
+                "Checklist:\n"
+                "- One line only (no explanation).\n"
+                "- Use each given number exactly once as a standalone number token.\n"
+                "- Never concatenate digits (e.g., 9 and 9 must not become 99).\n"
+                "- Only + - * / and parentheses.\n"
+                "- Must evaluate to 24.\n\n"
             )
 
         user = (
@@ -349,22 +391,33 @@ def _solve_with_retries(
         total_tokens += attempt_total_tokens or 0
         total_latency_ms += latency_ms or 0.0
 
+        raw_output = answer_text or ""
+        candidate_line, normalization = _normalize_candidate_line(raw_output)
+
         attempt_passed = False
         reason = None
+        precheck_failure_reason = None
+
         if solve_error_type is None:
-            raw = (answer_text or "").strip()
-            lines = raw.splitlines()
-            candidate = lines[0].strip() if lines else ""
-            attempt_passed = validator.validate(candidate, query.question)
-            if attempt_passed:
-                answer_text = candidate
+            precheck_failure_reason = _precheck_candidate(
+                candidate_line=candidate_line,
+                allowed_numbers=numbers,
+            )
+            if precheck_failure_reason is None:
+                attempt_passed = validator.validate(candidate_line, query.question)
+                if attempt_passed:
+                    answer_text = candidate_line
+                else:
+                    reason = validator.failure_reason(candidate_line, query.question)
+                    answer_text = candidate_line
             else:
-                reason = validator.failure_reason(candidate, query.question)
-                answer_text = candidate
+                reason = precheck_failure_reason
+                answer_text = candidate_line
         else:
             reason = "solve_error"
 
         last_reason = reason
+        last_raw_output = raw_output
         last_answer_text = answer_text
 
         metrics.log_call(
@@ -384,10 +437,22 @@ def _solve_with_retries(
                 total_tokens=attempt_total_tokens,
                 latency_ms=latency_ms,
                 error_type=solve_error_type,
+                raw_output=raw_output,
+                candidate_line=candidate_line,
+                normalization=normalization,
+                precheck_failure_reason=precheck_failure_reason,
             )
         )
 
         call_id_validate = metrics.new_call_id()
+        validate_error_type: str | None
+        if solve_error_type is not None:
+            validate_error_type = "skipped_solve_error"
+        elif precheck_failure_reason is not None:
+            validate_error_type = "skipped_precheck"
+        else:
+            validate_error_type = None
+
         metrics.log_call(
             StreamCallMetrics(
                 call_id=call_id_validate,
@@ -400,7 +465,11 @@ def _solve_with_retries(
                 validator_passed=attempt_passed,
                 failure_reason=reason,
                 prompt_variant=prompt_variant,
-                error_type=None if solve_error_type is None else "skipped",
+                error_type=validate_error_type,
+                raw_output=raw_output,
+                candidate_line=candidate_line,
+                normalization=normalization,
+                precheck_failure_reason=precheck_failure_reason,
             )
         )
 
