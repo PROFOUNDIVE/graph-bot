@@ -156,9 +156,18 @@ class GraphRAGAdapter:
     Replace with actual DB client (e.g., Neo4j, Memgraph, SQLite-backed graph, etc.).
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str | None = None,
+        use_edges: bool | None = None,
+        policy_id: str | None = None,
+    ) -> None:
         self.uri = settings.graphrag_uri
         self.store_path = Path(settings.metagraph_path)
+        self.mode = mode or settings.mode
+        self.use_edges = use_edges if use_edges is not None else settings.use_edges
+        self.policy_id = policy_id or settings.policy_id
         self._graph = self._load_or_init_graph()
 
     def _load_or_init_graph(self) -> MetaGraph:
@@ -402,24 +411,36 @@ class GraphRAGAdapter:
         )
         seed_nodes = [node_id for node_id, _ in sorted_nodes[: settings.rerank_top_n]]
 
-        adjacency: Dict[str, List[str]] = {}
-        for edge in self._graph.edges:
-            adjacency.setdefault(edge.src, []).append(edge.dst)
+        if self.use_edges:
+            adjacency: Dict[str, List[str]] = {}
+            for edge in self._graph.edges:
+                adjacency.setdefault(edge.src, []).append(edge.dst)
 
-        candidate_paths = self._build_candidate_paths(
-            seed_nodes, adjacency, node_scores
-        )
+            candidate_paths = self._build_candidate_paths(
+                seed_nodes, adjacency, node_scores
+            )
+        else:
+            candidate_paths = [
+                [node_id] for node_id in seed_nodes[: settings.rerank_top_n]
+            ]
+
         scored_paths = []
         for path in candidate_paths:
             semantic_score, combined_score = self._score_path(
                 path, node_scores, node_index
             )
+            if self.policy_id == "semantic_only":
+                combined_score = semantic_score
             scored_paths.append((path, semantic_score, combined_score))
 
         semantic_sorted = sorted(scored_paths, key=lambda item: item[1], reverse=True)
         semantic_sorted = semantic_sorted[: settings.rerank_top_n]
-        reranked = sorted(semantic_sorted, key=lambda item: item[2], reverse=True)
-        selected = reranked[:k]
+
+        if self.policy_id == "semantic_only":
+            selected = semantic_sorted[:k]
+        else:
+            reranked = sorted(semantic_sorted, key=lambda item: item[2], reverse=True)
+            selected = reranked[:k]
 
         paths: List[RetrievalPath] = []
         context_chunks: List[str] = []

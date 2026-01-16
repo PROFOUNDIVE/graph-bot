@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -388,11 +387,26 @@ def retrieve(
     task: Optional[str] = typer.Option(
         None, "--task", help="Task label for retrieval metadata"
     ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
+    ),
+    use_edges: Optional[bool] = typer.Option(
+        None, "--use-edges", help="Use graph edges for path construction"
+    ),
+    policy_id: Optional[str] = typer.Option(
+        None,
+        "--policy-id",
+        help="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    ),
 ):
     """Retrieve & Instantiate per input w/ k optimal paths and answer via LLM."""
     metadata = {"task": task} if task else None
     q = UserQuery(id="q-1", question=query, metadata=metadata)
-    adapter = GraphRAGAdapter()
+    adapter = GraphRAGAdapter(
+        mode=mode or settings.mode,
+        use_edges=use_edges if use_edges is not None else settings.use_edges,
+        policy_id=policy_id or settings.policy_id,
+    )
     result = adapter.retrieve_paths(q, k=k or settings.top_k_paths)
     if show_paths:
         typer.echo(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
