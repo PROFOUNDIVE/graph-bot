@@ -87,6 +87,12 @@ def run_continual_stream(
             )
         )
 
+        active_mode = mode or settings.mode
+        active_policy_id = policy_id or settings.policy_id
+
+        adapter.mode = active_mode
+        adapter.policy_id = active_policy_id
+
         retrieval = adapter.retrieve_paths(query, k=settings.top_k_paths)
         adapter.register_usage(retrieval.paths)
 
@@ -144,6 +150,13 @@ def run_continual_stream(
                 )
             )
         adapter.update_with_feedback(evaluations)
+
+        if solved:
+            _insert_solution_template(
+                adapter=adapter,
+                problem_id=problem_id,
+                answer_text=answer_text,
+            )
 
         memory = adapter.export_graph()
 
@@ -228,6 +241,31 @@ def _count_contaminated_templates(graph, paths: list) -> int:
                 contaminated += 1
 
     return contaminated
+
+
+def _insert_solution_template(
+    *,
+    adapter: GraphRAGAdapter,
+    problem_id: str,
+    answer_text: str,
+) -> None:
+    from ..types import ReasoningNode, ReasoningTree
+
+    tree = ReasoningTree(
+        tree_id=f"episode-{problem_id}",
+        root_id=f"episode-{problem_id}-solution",
+        nodes=[
+            ReasoningNode(
+                node_id=f"episode-{problem_id}-solution",
+                text=answer_text,
+                type="thought",
+                attributes={"subtype": "template"},
+            )
+        ],
+        edges=[],
+        provenance={"task": "game24", "source": "stream"},
+    )
+    adapter.insert_trees([tree])
 
 
 def _solve_with_retrieval(query: UserQuery, retrieval) -> tuple[str, dict[str, object]]:
