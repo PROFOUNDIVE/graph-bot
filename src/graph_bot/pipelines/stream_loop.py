@@ -87,6 +87,12 @@ def run_continual_stream(
             )
         )
 
+        active_mode = mode or settings.mode
+        active_policy_id = policy_id or settings.policy_id
+
+        adapter.mode = active_mode
+        adapter.policy_id = active_policy_id
+
         retrieval = adapter.retrieve_paths(query, k=settings.top_k_paths)
         adapter.register_usage(retrieval.paths)
 
