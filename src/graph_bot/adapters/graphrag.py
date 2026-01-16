@@ -365,6 +365,10 @@ class GraphRAGAdapter:
                 key = "n_success" if evaluation.success else "n_fail"
                 stats[key] = int(stats.get(key, 0)) + 1
                 _update_ema(stats, success=evaluation.success)
+
+                quality = node.attributes.get("quality")
+                if isinstance(quality, dict):
+                    quality["validator_passed"] = bool(evaluation.success)
                 total = int(stats.get("n_success", 0)) + int(stats.get("n_fail", 0))
                 _update_running_avg(
                     stats, key="avg_tokens", value=evaluation.tokens, count=total
