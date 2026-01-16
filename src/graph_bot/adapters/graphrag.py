@@ -415,7 +415,9 @@ class GraphRAGAdapter:
         )
         seed_nodes = [node_id for node_id, _ in sorted_nodes[: settings.rerank_top_n]]
 
-        if self.use_edges:
+        if self.mode == "flat_template_rag":
+            candidate_paths = [[node_id] for node_id in seed_nodes]
+        elif self.use_edges:
             adjacency: Dict[str, List[str]] = {}
             for edge in self._graph.edges:
                 adjacency.setdefault(edge.src, []).append(edge.dst)
