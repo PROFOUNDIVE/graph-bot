@@ -55,6 +55,9 @@ class Game24Validator(BaseValidator):
         """
         try:
             problem_numbers = self._extract_numbers(problem)
+            if problem_numbers and abs(problem_numbers[-1] - 24.0) < 1e-6:
+                problem_numbers = problem_numbers[:-1]
+
             answer_numbers = self._extract_numbers(answer)
 
             if sorted(problem_numbers) != sorted(answer_numbers):
