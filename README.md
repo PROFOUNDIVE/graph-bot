@@ -57,10 +57,18 @@ and emits JSONL metrics (per-call, per-problem, cumulative stream metrics).
 {"id":"q-001","numbers":[2,5,8,11],"target":24}
 ```
 
-2) Run the stream:
+2) Run the vLLM server (OpenAI-compatible API):
 
 ```bash
-graph-bot stream data/game24.jsonl --mode graph_bot --use-edges --policy-id semantic_topK_stats_rerank --validator-mode oracle
+graph-bot llm-server start --port 2427 --served-model-name llama3-8b-instruct --model /path/to/local/hf/model
+```
+
+3) Run the stream:
+
+```bash
+GRAPH_BOT_LLM_BASE_URL=http://127.0.0.1:2427/v1 \
+GRAPH_BOT_LLM_MODEL=llama3-8b-instruct \
+graph-bot stream data/game24.jsonl --run-id run --metrics-out-dir outputs/stream_logs --mode graph_bot --use-edges --policy-id semantic_topK_stats_rerank --validator-mode oracle
 ```
 
 This produces JSONL logs under `outputs/stream_logs/`:
@@ -69,7 +77,7 @@ This produces JSONL logs under `outputs/stream_logs/`:
 - `outputs/stream_logs/run.problems.jsonl`
 - `outputs/stream_logs/run.stream.jsonl`
 
-3) Generate EXP1 amortization curve (CSV):
+4) Generate EXP1 amortization curve (CSV):
 
 ```bash
 graph-bot amortize outputs/stream_logs/run.stream.jsonl --out outputs/amortization_curve.csv
