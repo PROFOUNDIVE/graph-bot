@@ -18,6 +18,11 @@ class AppSettings(BaseSettings):
     llm_api_key: str = Field(default="EMPTY")
     llm_temperature: float = Field(default=0.0)
     llm_token_cost_usd_per_1k: float = Field(default=0.0)
+
+    retry_max_attempts: int = Field(default=3)
+    retry_temperature_1: float = Field(default=0.0)
+    retry_temperature_2: float = Field(default=0.6)
+    retry_temperature_3: float = Field(default=0.9)
     embedding_model: str = Field(default="all-MiniLM-L6-v2")
 
     # GraphRAG DB connection (placeholder)

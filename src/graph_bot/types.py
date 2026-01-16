@@ -11,6 +11,11 @@ class StreamCallMetrics(BaseModel):
     t: int
     problem_id: str
     operation: str
+    attempt_index: int | None = None
+    temperature: float | None = None
+    validator_passed: bool | None = None
+    failure_reason: str | None = None
+    prompt_variant: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -18,12 +23,18 @@ class StreamCallMetrics(BaseModel):
     api_cost_usd: float | None = None
     error_type: str | None = None
 
+    raw_output: str | None = None
+    candidate_line: str | None = None
+    normalization: str | None = None
+    precheck_failure_reason: str | None = None
+
 
 class StreamProblemMetrics(BaseModel):
     t: int
     problem_id: str
     solved: bool
     attempts: int = 1
+    solved_attempt: int | None = None
     attempt_success_rate: float | None = None
     llm_calls: int = 0
     tokens_total: int = 0

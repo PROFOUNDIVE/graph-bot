@@ -2,11 +2,71 @@ from __future__ import annotations
 
 import ast
 import operator
-import re
 from abc import ABC, abstractmethod
 from typing import Dict
 
 from ..logsetting import logger
+
+
+def extract_game24_problem_numbers(text: str) -> list[int]:
+    numbers: list[int] = []
+    for token in text.replace("→", " ").split():
+        try:
+            value = int(float(token))
+        except ValueError:
+            continue
+        numbers.append(abs(value))
+    return numbers
+
+
+def extract_game24_expression_number_literals(expr: str) -> list[int] | None:
+    try:
+        node = ast.parse(expr, mode="eval")
+    except Exception:
+        return None
+
+    allowed_binop_types = (ast.Add, ast.Sub, ast.Mult, ast.Div)
+    numbers: list[int] = []
+
+    def _walk(n: ast.AST) -> None:
+        if isinstance(n, ast.Expression):
+            _walk(n.body)
+            return
+
+        if isinstance(n, ast.Constant):
+            if isinstance(n.value, bool):
+                raise ValueError("invalid constant")
+            if isinstance(n.value, int):
+                numbers.append(abs(n.value))
+                return
+            if isinstance(n.value, float):
+                if float(n.value).is_integer():
+                    numbers.append(abs(int(n.value)))
+                    return
+                raise ValueError("non-integer literal")
+            raise ValueError("invalid constant")
+
+        if isinstance(n, ast.UnaryOp):
+            if isinstance(n.op, ast.USub):
+                _walk(n.operand)
+                return
+            raise ValueError("invalid unary")
+
+        if isinstance(n, ast.BinOp):
+            if not isinstance(n.op, allowed_binop_types):
+                raise ValueError("invalid op")
+            _walk(n.left)
+            _walk(n.right)
+            return
+
+        raise ValueError("invalid node")
+
+    try:
+        _walk(node)
+    except Exception:
+        return None
+
+    return numbers
 
 
 class BaseValidator(ABC):
@@ -16,6 +76,11 @@ class BaseValidator(ABC):
     def validate(self, answer: str, problem: str) -> bool:
         """Validate answer for given problem."""
         pass
+
+    def failure_reason(self, answer: str, problem: str) -> str | None:
+        del answer
+        del problem
+        return None
 
     @abstractmethod
     def get_validator_name(self) -> str:
@@ -40,25 +105,40 @@ class Game24Validator(BaseValidator):
         ast.Div: operator.truediv,
     }
 
-    def __init__(self):
-        self._pattern = re.compile(r"(-?\d+\.?\d*)")
-
-    def validate(self, answer: str, problem: str) -> bool:
-        """Validate Game24 answer.
-
-        Args:
-            answer: Arithmetic expression (e.g., "(2 + 5) * 8 / 4")
-            problem: Problem statement (e.g., "2 5 8 4 → 24")
-
-        Returns:
-            True if answer is valid and evaluates to 24
-        """
+    def failure_reason(self, answer: str, problem: str) -> str | None:
         try:
-            problem_numbers = self._extract_numbers(problem)
-            if problem_numbers and abs(problem_numbers[-1] - 24.0) < 1e-6:
+            problem_numbers = extract_game24_problem_numbers(problem)
+            if problem_numbers and problem_numbers[-1] == 24:
                 problem_numbers = problem_numbers[:-1]
 
-            answer_numbers = self._extract_numbers(answer)
+            answer_numbers = extract_game24_expression_number_literals(answer)
+            if answer_numbers is None:
+                return "format_error"
+
+            if sorted(problem_numbers) != sorted(answer_numbers):
+                return "wrong_numbers"
+
+            result = self._safe_eval(answer)
+            if result is None:
+                return "format_error"
+
+            if abs(result - 24.0) >= 1e-6:
+                return "math_error"
+
+            return None
+        except Exception:
+            return "format_error"
+
+    def validate(self, answer: str, problem: str) -> bool:
+        try:
+            problem_numbers = extract_game24_problem_numbers(problem)
+            if problem_numbers and problem_numbers[-1] == 24:
+                problem_numbers = problem_numbers[:-1]
+
+            answer_numbers = extract_game24_expression_number_literals(answer)
+            if answer_numbers is None:
+                logger.debug(f"Validation failed: cannot parse literals: {answer}")
+                return False
 
             if sorted(problem_numbers) != sorted(answer_numbers):
                 logger.debug(
@@ -83,11 +163,6 @@ class Game24Validator(BaseValidator):
 
     def get_validator_name(self) -> str:
         return "oracle"
-
-    def _extract_numbers(self, text: str) -> list[float]:
-        """Extract all numbers from text as floats."""
-        matches = self._pattern.findall(text)
-        return [float(m) for m in matches]
 
     def _safe_eval(self, expr: str) -> float | None:
         """Safely evaluate arithmetic expression.
