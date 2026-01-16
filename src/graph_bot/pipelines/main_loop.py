@@ -35,10 +35,14 @@ def answer_with_retrieval(
         query, adapter=active_adapter
     )
 
-    system = "You are a helpful assistant."
+    system = "You solve Game of 24. Output only an arithmetic expression."
     user = (
-        f"Solve the following problem. Output ONLY a valid arithmetic expression.\n\n"
-        f"Problem: {query.question}\n\n"
+        f"Numbers: {query.question}\n\n"
+        "Rules:\n"
+        "- Use each given number exactly once.\n"
+        "- Use only + - * / and parentheses.\n"
+        "- Do NOT output '= 24' or '→ 24'.\n"
+        "- Output MUST be a single line containing only the expression.\n\n"
         f"Retrieved templates/context:\n{active_retrieval.concatenated_context}\n"
     )
 
