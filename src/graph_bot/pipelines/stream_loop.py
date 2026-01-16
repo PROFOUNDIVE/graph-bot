@@ -275,6 +275,8 @@ def _precheck_candidate(
 ) -> str | None:
     import re
 
+    from ..eval.validators import extract_game24_expression_number_literals
+
     if not candidate_line:
         return "empty_output"
 
@@ -284,7 +286,10 @@ def _precheck_candidate(
     if re.search(r"[^0-9\s\(\)\+\-\*/]", candidate_line):
         return "illegal_tokens"
 
-    number_tokens = [int(x) for x in re.findall(r"\d+", candidate_line)]
+    number_tokens = extract_game24_expression_number_literals(candidate_line)
+    if number_tokens is None:
+        return "format_error"
+
     if sorted(number_tokens) != sorted(allowed_numbers):
         return "wrong_numbers"
 
