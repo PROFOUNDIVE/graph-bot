@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 
 from pathlib import Path
 
@@ -32,6 +31,23 @@ class AppSettings(BaseSettings):
     ema_tau_days: int = Field(default=7)
     ema_min_seen: int = Field(default=5)
     ema_min_success: float = Field(default=0.2)
+
+    # Continual stream config (v0.2)
+    mode: str = Field(
+        default="graph_bot",
+        description="Execution mode: graph_bot or flat_template_rag",
+    )
+    use_edges: bool = Field(
+        default=True, description="Use graph edges for path construction"
+    )
+    policy_id: str = Field(
+        default="semantic_topK_stats_rerank",
+        description="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    )
+    validator_mode: str = Field(
+        default="oracle",
+        description="Validator mode: oracle, exec_repair, or weak_llm_judge",
+    )
 
 
 settings = AppSettings()
