@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 
 from ..adapters.graphrag import GraphRAGAdapter
-from ..eval.validators import get_validator
+from ..eval.validators import BaseValidator, get_validator
 from ..pipelines.metrics_logger import StreamMetricsLogger
 from ..types import PathEvaluation, StreamCallMetrics, StreamProblemMetrics, UserQuery
 
@@ -104,48 +104,20 @@ def run_continual_stream(
         if reuse_count > 0:
             contamination_rate = contaminated / reuse_count
 
-        call_id_solve = metrics.new_call_id()
-        answer_text = ""
-        solve_usage: dict[str, object] = {}
-        solve_error_type: str | None = None
-        try:
-            answer_text, solve_usage = _solve_with_retrieval(query, retrieval)
-        except Exception as exc:
-            solve_error_type = type(exc).__name__
-
-        metrics.log_call(
-            StreamCallMetrics(
-                call_id=call_id_solve,
-                parent_id=call_id_retrieve,
+        answer_text, aggregate_usage, solved, solved_attempt, last_reason = (
+            _solve_with_retries(
+                query=query,
+                retrieval=retrieval,
+                validator=validator,
+                metrics=metrics,
+                parent_call_id=call_id_retrieve,
                 t=t,
                 problem_id=problem_id,
-                operation="solve",
-                prompt_tokens=_maybe_int(solve_usage.get("prompt_tokens")),
-                completion_tokens=_maybe_int(solve_usage.get("completion_tokens")),
-                total_tokens=_maybe_int(solve_usage.get("total_tokens")),
-                latency_ms=_maybe_float(solve_usage.get("latency_ms")),
-                error_type=solve_error_type,
             )
         )
 
-        call_id_validate = metrics.new_call_id()
-        metrics.log_call(
-            StreamCallMetrics(
-                call_id=call_id_validate,
-                parent_id=call_id_solve,
-                t=t,
-                problem_id=problem_id,
-                operation="validate",
-                error_type="skipped" if solve_error_type else None,
-            )
-        )
-
-        solved = False
-        if not solve_error_type:
-            solved = validator.validate(answer_text, query.question)
-
-        solve_tokens_total = _maybe_int(solve_usage.get("total_tokens"))
-        solve_latency_ms = _maybe_float(solve_usage.get("latency_ms"))
+        solve_tokens_total = _maybe_int(aggregate_usage.get("total_tokens"))
+        solve_latency_ms = _maybe_float(aggregate_usage.get("latency_ms"))
 
         evaluations = []
         for path in retrieval.paths:
@@ -180,9 +152,10 @@ def run_continual_stream(
             t=t,
             problem_id=problem_id,
             solved=solved,
-            attempts=1,
+            attempts=settings.retry_max_attempts,
+            solved_attempt=solved_attempt,
             attempt_success_rate=1.0 if solved else 0.0,
-            llm_calls=1,
+            llm_calls=settings.retry_max_attempts,
             tokens_total=tokens_total,
             latency_total_ms=latency_total_ms,
             api_cost_usd=api_cost_usd,
@@ -276,6 +249,121 @@ def _insert_solution_template(
         provenance={"task": "game24", "source": "stream"},
     )
     adapter.insert_trees([tree])
+
+
+def _solve_with_retries(
+    *,
+    query: UserQuery,
+    retrieval,
+    validator: BaseValidator,
+    metrics: StreamMetricsLogger,
+    parent_call_id: str,
+    t: int,
+    problem_id: str,
+) -> tuple[str, dict[str, object], bool, int | None, str | None]:
+    from ..pipelines.main_loop import answer_with_retrieval
+    from ..settings import settings
+
+    temperatures = [
+        settings.retry_temperature_1,
+        settings.retry_temperature_2,
+        settings.retry_temperature_3,
+    ]
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
+    total_latency_ms = 0.0
+
+    last_reason: str | None = None
+    last_answer_text = ""
+
+    for attempt_index in range(1, settings.retry_max_attempts + 1):
+        temperature = temperatures[min(attempt_index - 1, len(temperatures) - 1)]
+
+        call_id_solve = metrics.new_call_id()
+        answer_text = ""
+        solve_usage: dict[str, object] = {}
+        solve_error_type: str | None = None
+        try:
+            answer = answer_with_retrieval(
+                query,
+                retrieval=retrieval,
+            )
+            answer_text = answer.answer
+            solve_usage = dict(answer.metadata or {})
+        except Exception as exc:
+            solve_error_type = type(exc).__name__
+
+        prompt_tokens = _maybe_int(solve_usage.get("prompt_tokens"))
+        completion_tokens = _maybe_int(solve_usage.get("completion_tokens"))
+        attempt_total_tokens = _maybe_int(solve_usage.get("total_tokens"))
+        latency_ms = _maybe_float(solve_usage.get("latency_ms"))
+
+        total_prompt_tokens += prompt_tokens or 0
+        total_completion_tokens += completion_tokens or 0
+        total_tokens += attempt_total_tokens or 0
+        total_latency_ms += latency_ms or 0.0
+
+        attempt_passed = False
+        reason = None
+        if solve_error_type is None:
+            attempt_passed = validator.validate(answer_text, query.question)
+            if not attempt_passed:
+                reason = validator.failure_reason(answer_text, query.question)
+        else:
+            reason = "solve_error"
+
+        last_reason = reason
+
+        metrics.log_call(
+            StreamCallMetrics(
+                call_id=call_id_solve,
+                parent_id=parent_call_id,
+                t=t,
+                problem_id=problem_id,
+                operation="solve",
+                attempt_index=attempt_index,
+                temperature=temperature,
+                validator_passed=attempt_passed if solve_error_type is None else False,
+                failure_reason=reason,
+                prompt_variant="retry" if attempt_index > 1 else "base",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=attempt_total_tokens,
+                latency_ms=latency_ms,
+                error_type=solve_error_type,
+            )
+        )
+
+        last_answer_text = answer_text
+
+        if attempt_passed:
+            return (
+                answer_text,
+                {
+                    "prompt_tokens": total_prompt_tokens,
+                    "completion_tokens": total_completion_tokens,
+                    "total_tokens": total_tokens,
+                    "latency_ms": total_latency_ms,
+                },
+                True,
+                attempt_index,
+                None,
+            )
+
+    return (
+        last_answer_text,
+        {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
+            "latency_ms": total_latency_ms,
+        },
+        False,
+        None,
+        last_reason,
+    )
 
 
 def _solve_with_retrieval(query: UserQuery, retrieval) -> tuple[str, dict[str, object]]:
