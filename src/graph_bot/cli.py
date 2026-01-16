@@ -403,6 +403,12 @@ def stream(
     max_problems: Optional[int] = typer.Option(
         None, "--max-problems", help="Optional limit on number of problems"
     ),
+    run_id: str = typer.Option("run", "--run-id", help="Run id prefix for log files"),
+    metrics_out_dir: Path = typer.Option(
+        Path("outputs/stream_logs"),
+        "--metrics-out-dir",
+        help="Directory to write stream JSONL logs",
+    ),
 ):
     """Run continual stream loop for Game of 24."""
     run_continual_stream(
@@ -412,6 +418,8 @@ def stream(
         policy_id=policy_id,
         validator_mode=validator_mode or settings.validator_mode,
         max_problems=max_problems,
+        run_id=run_id,
+        metrics_out_dir=metrics_out_dir,
     )
 
 
