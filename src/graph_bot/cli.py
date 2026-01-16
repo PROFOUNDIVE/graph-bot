@@ -255,11 +255,19 @@ def llm_server(
                 cuda_visible_devices=str(gpu_id),
                 log_file=log_file,
             ),
-            daemon=True,
+            daemon=False,
         )
         proc.start()
 
         pid_file.write_text(str(proc.pid))
+
+        proc.join(timeout=0.1)
+
+        if not proc.is_alive():
+            typer.secho(
+                f"[ERROR] Server process exited early. Check {log_file}", fg="red"
+            )
+            raise typer.Exit(code=1)
         typer.secho(
             f"Starting vLLM server on GPU {gpu_id} with port {port} (pid={proc.pid})...",
             fg="cyan",
