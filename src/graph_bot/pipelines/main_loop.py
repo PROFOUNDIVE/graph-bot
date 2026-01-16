@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from ..types import SeedData, UserQuery, LLMAnswer, RetrievalResult
 from ..adapters.graphrag import GraphRAGAdapter
+from ..adapters.vllm_openai_client import VLLMOpenAIClient
+from ..settings import settings
+from ..types import LLMAnswer, RetrievalResult, SeedData, UserQuery
 from .build_trees import build_reasoning_trees_from_seeds
 from .retrieve import retrieve_k_optimal_paths
 
@@ -32,6 +34,38 @@ def answer_with_retrieval(
     active_retrieval = retrieval or retrieve_k_optimal_paths(
         query, adapter=active_adapter
     )
+
+    system = "You solve Game of 24. Output only an arithmetic expression."
+    user = (
+        f"Numbers: {query.question}\n\n"
+        "Rules:\n"
+        "- Use each given number exactly once.\n"
+        "- Use only + - * / and parentheses.\n"
+        "- Do NOT output '= 24' or '→ 24'.\n"
+        "- Output MUST be a single line containing only the expression.\n\n"
+        f"Retrieved templates/context:\n{active_retrieval.concatenated_context}\n"
+    )
+
+    client = VLLMOpenAIClient(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+    )
+    text, usage = client.chat(
+        system=system,
+        user=user,
+        temperature=settings.llm_temperature,
+    )
+
     active_adapter.register_usage(active_retrieval.paths)
-    answer_text = f"Q: {query.question}\n\nContext:\n{active_retrieval.concatenated_context}\n\nA: [stubbed answer]"
-    return LLMAnswer(query_id=query.id, answer=answer_text)
+
+    return LLMAnswer(
+        query_id=query.id,
+        answer=text.strip(),
+        metadata={
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "latency_ms": usage.latency_ms,
+        },
+    )

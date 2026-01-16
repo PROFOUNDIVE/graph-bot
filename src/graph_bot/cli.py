@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -7,12 +6,14 @@ from typing import List, Optional
 
 import typer
 
+from .logsetting import logger
 from .types import SeedData, ReasoningTree, UserQuery
 from .pipelines.build_trees import build_reasoning_trees_from_seeds
 from .adapters.graphrag import GraphRAGAdapter
 from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs
+from .pipelines.stream_loop import run_continual_stream
 from .settings import settings
-from .logsetting import logger
+from .utils.amortization import generate_amortization_curve
 
 from vllm.entrypoints.openai.api_server import run_server  # noqa: E402
 from vllm.entrypoints.openai.cli_args import (  # noqa: E402
@@ -254,12 +255,19 @@ def llm_server(
                 cuda_visible_devices=str(gpu_id),
                 log_file=log_file,
             ),
-            daemon=False,  # 부모 종료 후에도 계속 동작
+            daemon=False,
         )
         proc.start()
 
-        # PID 파일 기록
         pid_file.write_text(str(proc.pid))
+
+        proc.join(timeout=0.1)
+
+        if not proc.is_alive():
+            typer.secho(
+                f"[ERROR] Server process exited early. Check {log_file}", fg="red"
+            )
+            raise typer.Exit(code=1)
         typer.secho(
             f"Starting vLLM server on GPU {gpu_id} with port {port} (pid={proc.pid})...",
             fg="cyan",
@@ -378,6 +386,66 @@ def postprocess(
     typer.echo(f"Postprocess pruned {pruned} nodes after T={t_inputs} inputs")
 
 
+@app.command("stream")
+def stream(
+    problems_file: Path = typer.Argument(
+        ..., help="JSONL file of Game24 problems: {id, numbers, target?}"
+    ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
+    ),
+    use_edges: Optional[bool] = typer.Option(
+        None, "--use-edges", help="Use graph edges for path construction"
+    ),
+    policy_id: Optional[str] = typer.Option(
+        None,
+        "--policy-id",
+        help="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    ),
+    validator_mode: Optional[str] = typer.Option(
+        None,
+        "--validator-mode",
+        help="Validator mode: oracle, exec_repair, weak_llm_judge",
+    ),
+    max_problems: Optional[int] = typer.Option(
+        None, "--max-problems", help="Optional limit on number of problems"
+    ),
+    run_id: str = typer.Option("run", "--run-id", help="Run id prefix for log files"),
+    metrics_out_dir: Path = typer.Option(
+        Path("outputs/stream_logs"),
+        "--metrics-out-dir",
+        help="Directory to write stream JSONL logs",
+    ),
+):
+    """Run continual stream loop for Game of 24."""
+    run_continual_stream(
+        problems_file=problems_file,
+        mode=mode,
+        use_edges=use_edges,
+        policy_id=policy_id,
+        validator_mode=validator_mode or settings.validator_mode,
+        max_problems=max_problems,
+        run_id=run_id,
+        metrics_out_dir=metrics_out_dir,
+    )
+
+
+@app.command("amortize")
+def amortize(
+    stream_metrics_jsonl: Path = typer.Argument(
+        ..., help="Path to *.stream.jsonl output from stream run"
+    ),
+    out_csv: Path = typer.Option(
+        Path("outputs/amortization_curve.csv"), "--out", help="Output CSV path"
+    ),
+):
+    """Generate EXP1 amortization curve from stream logs."""
+    generate_amortization_curve(
+        stream_metrics_jsonl=stream_metrics_jsonl, out_csv=out_csv
+    )
+    typer.echo(f"Wrote amortization curve CSV to {out_csv}")
+
+
 @app.command("retrieve")
 def retrieve(
     query: str = typer.Argument(..., help="User query"),
@@ -388,11 +456,26 @@ def retrieve(
     task: Optional[str] = typer.Option(
         None, "--task", help="Task label for retrieval metadata"
     ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
+    ),
+    use_edges: Optional[bool] = typer.Option(
+        None, "--use-edges", help="Use graph edges for path construction"
+    ),
+    policy_id: Optional[str] = typer.Option(
+        None,
+        "--policy-id",
+        help="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    ),
 ):
     """Retrieve & Instantiate per input w/ k optimal paths and answer via LLM."""
     metadata = {"task": task} if task else None
     q = UserQuery(id="q-1", question=query, metadata=metadata)
-    adapter = GraphRAGAdapter()
+    adapter = GraphRAGAdapter(
+        mode=mode or settings.mode,
+        use_edges=use_edges if use_edges is not None else settings.use_edges,
+        policy_id=policy_id or settings.policy_id,
+    )
     result = adapter.retrieve_paths(q, k=k or settings.top_k_paths)
     if show_paths:
         typer.echo(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))

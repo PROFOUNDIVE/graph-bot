@@ -1,9 +1,58 @@
 from __future__ import annotations
-from __future__ import annotations
 
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+
+class StreamCallMetrics(BaseModel):
+    call_id: str
+    parent_id: str | None = None
+    t: int
+    problem_id: str
+    operation: str
+    attempt_index: int | None = None
+    temperature: float | None = None
+    validator_passed: bool | None = None
+    failure_reason: str | None = None
+    prompt_variant: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    latency_ms: float | None = None
+    api_cost_usd: float | None = None
+    error_type: str | None = None
+
+    raw_output: str | None = None
+    candidate_line: str | None = None
+    normalization: str | None = None
+    precheck_failure_reason: str | None = None
+
+
+class StreamProblemMetrics(BaseModel):
+    t: int
+    problem_id: str
+    solved: bool
+    attempts: int = 1
+    solved_attempt: int | None = None
+    attempt_success_rate: float | None = None
+    llm_calls: int = 0
+    tokens_total: int = 0
+    latency_total_ms: float = 0.0
+    api_cost_usd: float = 0.0
+    retrieval_hit: bool = False
+    reuse_count: int = 0
+    memory_n_nodes: int = 0
+    memory_n_edges: int = 0
+    contamination_rate: float | None = None
+
+
+class StreamCumulativeMetrics(BaseModel):
+    t: int
+    cumulative_solved: int
+    cumulative_api_cost_usd: float
+    cost_per_solved: float
+    contamination_rate: float | None = None
 
 
 class SeedData(BaseModel):

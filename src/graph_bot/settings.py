@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 
 from pathlib import Path
 
@@ -13,8 +12,17 @@ class AppSettings(BaseSettings):
     )
 
     # LLM / embedding provider configs
-    llm_provider: str = Field(default="openai")
-    llm_model: str = Field(default="gpt-4o-mini")
+    llm_provider: str = Field(default="vllm")
+    llm_model: str = Field(default="llama3-8b-instruct")
+    llm_base_url: str = Field(default="http://127.0.0.1:2427/v1")
+    llm_api_key: str = Field(default="EMPTY")
+    llm_temperature: float = Field(default=0.0)
+    llm_token_cost_usd_per_1k: float = Field(default=0.0)
+
+    retry_max_attempts: int = Field(default=3)
+    retry_temperature_1: float = Field(default=0.0)
+    retry_temperature_2: float = Field(default=0.6)
+    retry_temperature_3: float = Field(default=0.9)
     embedding_model: str = Field(default="all-MiniLM-L6-v2")
 
     # GraphRAG DB connection (placeholder)
@@ -32,6 +40,23 @@ class AppSettings(BaseSettings):
     ema_tau_days: int = Field(default=7)
     ema_min_seen: int = Field(default=5)
     ema_min_success: float = Field(default=0.2)
+
+    # Continual stream config (v0.2)
+    mode: str = Field(
+        default="graph_bot",
+        description="Execution mode: graph_bot or flat_template_rag",
+    )
+    use_edges: bool = Field(
+        default=True, description="Use graph edges for path construction"
+    )
+    policy_id: str = Field(
+        default="semantic_topK_stats_rerank",
+        description="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    )
+    validator_mode: str = Field(
+        default="oracle",
+        description="Validator mode: oracle, exec_repair, or weak_llm_judge",
+    )
 
 
 settings = AppSettings()
