@@ -12,8 +12,11 @@ class AppSettings(BaseSettings):
     )
 
     # LLM / embedding provider configs
-    llm_provider: str = Field(default="openai")
-    llm_model: str = Field(default="gpt-4o-mini")
+    llm_provider: str = Field(default="vllm")
+    llm_model: str = Field(default="llama3-8b-instruct")
+    llm_base_url: str = Field(default="http://127.0.0.1:2427/v1")
+    llm_api_key: str = Field(default="EMPTY")
+    llm_temperature: float = Field(default=0.0)
     embedding_model: str = Field(default="all-MiniLM-L6-v2")
 
     # GraphRAG DB connection (placeholder)
