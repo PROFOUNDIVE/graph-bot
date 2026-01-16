@@ -105,7 +105,13 @@ def run_continual_stream(
             contamination_rate = contaminated / reuse_count
 
         call_id_solve = metrics.new_call_id()
-        answer_text, solve_usage = _solve_with_retrieval(query, retrieval)
+        answer_text = ""
+        solve_usage: dict[str, object] = {}
+        solve_error_type: str | None = None
+        try:
+            answer_text, solve_usage = _solve_with_retrieval(query, retrieval)
+        except Exception as exc:
+            solve_error_type = type(exc).__name__
 
         metrics.log_call(
             StreamCallMetrics(
@@ -118,6 +124,7 @@ def run_continual_stream(
                 completion_tokens=_maybe_int(solve_usage.get("completion_tokens")),
                 total_tokens=_maybe_int(solve_usage.get("total_tokens")),
                 latency_ms=_maybe_float(solve_usage.get("latency_ms")),
+                error_type=solve_error_type,
             )
         )
 
@@ -129,10 +136,13 @@ def run_continual_stream(
                 t=t,
                 problem_id=problem_id,
                 operation="validate",
+                error_type="skipped" if solve_error_type else None,
             )
         )
 
-        solved = validator.validate(answer_text, query.question)
+        solved = False
+        if not solve_error_type:
+            solved = validator.validate(answer_text, query.question)
 
         solve_tokens_total = _maybe_int(solve_usage.get("total_tokens"))
         solve_latency_ms = _maybe_float(solve_usage.get("latency_ms"))
