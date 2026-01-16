@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 from ..adapters.graphrag import GraphRAGAdapter
 from ..eval.validators import get_validator
-from ..logsetting import logger
 from ..pipelines.metrics_logger import StreamMetricsLogger
 from ..types import PathEvaluation, StreamCallMetrics, StreamProblemMetrics, UserQuery
 
@@ -100,6 +99,8 @@ def run_continual_stream(
             contamination_rate = contaminated / reuse_count
 
         call_id_solve = metrics.new_call_id()
+        answer_text, solve_usage = _solve_with_retrieval(query, retrieval)
+
         metrics.log_call(
             StreamCallMetrics(
                 call_id=call_id_solve,
@@ -107,10 +108,12 @@ def run_continual_stream(
                 t=t,
                 problem_id=problem_id,
                 operation="solve",
+                prompt_tokens=_maybe_int(solve_usage.get("prompt_tokens")),
+                completion_tokens=_maybe_int(solve_usage.get("completion_tokens")),
+                total_tokens=_maybe_int(solve_usage.get("total_tokens")),
+                latency_ms=_maybe_float(solve_usage.get("latency_ms")),
             )
         )
-
-        answer_text = _solve_with_retrieval(query, retrieval)
 
         call_id_validate = metrics.new_call_id()
         metrics.log_call(
@@ -125,6 +128,9 @@ def run_continual_stream(
 
         solved = validator.validate(answer_text, query.question)
 
+        solve_tokens_total = _maybe_int(solve_usage.get("total_tokens"))
+        solve_latency_ms = _maybe_float(solve_usage.get("latency_ms"))
+
         evaluations = []
         for path in retrieval.paths:
             evaluations.append(
@@ -132,8 +138,8 @@ def run_continual_stream(
                     path_id=path.path_id,
                     node_ids=path.node_ids,
                     success=solved,
-                    tokens=None,
-                    latency_ms=None,
+                    tokens=solve_tokens_total,
+                    latency_ms=solve_latency_ms,
                     cost_usd=None,
                 )
             )
@@ -141,16 +147,22 @@ def run_continual_stream(
 
         memory = adapter.export_graph()
 
+        tokens_total = solve_tokens_total or 0
+        latency_total_ms = solve_latency_ms or 0.0
+        api_cost_usd = 0.0
+        if settings.llm_provider == "vllm" and settings.llm_token_cost_usd_per_1k > 0:
+            api_cost_usd = (tokens_total / 1000.0) * settings.llm_token_cost_usd_per_1k
+
         problem_metrics = StreamProblemMetrics(
             t=t,
             problem_id=problem_id,
             solved=solved,
             attempts=1,
             attempt_success_rate=1.0 if solved else 0.0,
-            llm_calls=3,
-            tokens_total=0,
-            latency_total_ms=0.0,
-            api_cost_usd=0.0,
+            llm_calls=1,
+            tokens_total=tokens_total,
+            latency_total_ms=latency_total_ms,
+            api_cost_usd=api_cost_usd,
             retrieval_hit=len(retrieval.paths) > 0,
             reuse_count=reuse_count,
             memory_n_nodes=len(memory.nodes),
@@ -174,6 +186,34 @@ def run_continual_stream(
     return results
 
 
+def _maybe_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _maybe_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _count_contaminated_templates(graph, paths: list) -> int:
     node_index = {node.node_id: node for node in graph.nodes}
 
@@ -190,16 +230,11 @@ def _count_contaminated_templates(graph, paths: list) -> int:
     return contaminated
 
 
-def _solve_with_retrieval(query: UserQuery, retrieval) -> str:
-    """Solve problem using retrieved templates.
-
-    Currently stubbed - returns placeholder answer.
-    Future: Integrate with actual LLM API.
-    """
+def _solve_with_retrieval(query: UserQuery, retrieval) -> tuple[str, dict[str, object]]:
     from ..pipelines.main_loop import answer_with_retrieval
 
     answer = answer_with_retrieval(query, retrieval=retrieval)
-    return answer.answer
+    return answer.answer, dict(answer.metadata or {})
 
 
 def _update_metagraph_with_success(
