@@ -104,16 +104,21 @@ def run_continual_stream(
         if reuse_count > 0:
             contamination_rate = contaminated / reuse_count
 
-        answer_text, aggregate_usage, solved, solved_attempt, last_reason = (
-            _solve_with_retries(
-                query=query,
-                retrieval=retrieval,
-                validator=validator,
-                metrics=metrics,
-                parent_call_id=call_id_retrieve,
-                t=t,
-                problem_id=problem_id,
-            )
+        (
+            answer_text,
+            aggregate_usage,
+            solved,
+            solved_attempt,
+            _last_reason,
+            attempts_used,
+        ) = _solve_with_retries(
+            query=query,
+            retrieval=retrieval,
+            validator=validator,
+            metrics=metrics,
+            parent_call_id=call_id_retrieve,
+            t=t,
+            problem_id=problem_id,
         )
 
         solve_tokens_total = _maybe_int(aggregate_usage.get("total_tokens"))
@@ -148,14 +153,17 @@ def run_continual_stream(
         if settings.llm_provider == "vllm" and settings.llm_token_cost_usd_per_1k > 0:
             api_cost_usd = (tokens_total / 1000.0) * settings.llm_token_cost_usd_per_1k
 
+        attempts_used = max(1, attempts_used)
+        success_rate = (1.0 / attempts_used) if solved else 0.0
+
         problem_metrics = StreamProblemMetrics(
             t=t,
             problem_id=problem_id,
             solved=solved,
-            attempts=settings.retry_max_attempts,
+            attempts=attempts_used,
             solved_attempt=solved_attempt,
-            attempt_success_rate=1.0 if solved else 0.0,
-            llm_calls=settings.retry_max_attempts,
+            attempt_success_rate=success_rate,
+            llm_calls=attempts_used,
             tokens_total=tokens_total,
             latency_total_ms=latency_total_ms,
             api_cost_usd=api_cost_usd,
@@ -260,8 +268,10 @@ def _solve_with_retries(
     parent_call_id: str,
     t: int,
     problem_id: str,
-) -> tuple[str, dict[str, object], bool, int | None, str | None]:
-    from ..pipelines.main_loop import answer_with_retrieval
+) -> tuple[str, dict[str, object], bool, int | None, str | None, int]:
+    import re
+
+    from ..adapters.vllm_openai_client import VLLMOpenAIClient
     from ..settings import settings
 
     temperatures = [
@@ -270,35 +280,69 @@ def _solve_with_retries(
         settings.retry_temperature_3,
     ]
 
+    pattern = re.compile(r"(-?\d+\.?\d*)")
+    numbers = [int(float(x)) for x in pattern.findall(query.question)[:4]]
+    numbers_str = " ".join(str(x) for x in numbers)
+
+    system = "You solve Game of 24. Output only an arithmetic expression."
+
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_tokens = 0
     total_latency_ms = 0.0
 
+    client = VLLMOpenAIClient(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+    )
+
     last_reason: str | None = None
     last_answer_text = ""
+    attempts_used = 0
 
     for attempt_index in range(1, settings.retry_max_attempts + 1):
+        attempts_used = attempt_index
         temperature = temperatures[min(attempt_index - 1, len(temperatures) - 1)]
 
         call_id_solve = metrics.new_call_id()
-        answer_text = ""
-        solve_usage: dict[str, object] = {}
-        solve_error_type: str | None = None
-        try:
-            answer = answer_with_retrieval(
-                query,
-                retrieval=retrieval,
+
+        prompt_variant = "base" if attempt_index == 1 else "retry"
+
+        retry_line = ""
+        if attempt_index > 1 and last_reason:
+            retry_line = (
+                f"Previous attempt invalid because: {last_reason}. "
+                "Return ONLY a corrected expression.\n\n"
             )
-            answer_text = answer.answer
-            solve_usage = dict(answer.metadata or {})
+
+        user = (
+            f"Numbers: {numbers_str}\n\n"
+            "Rules:\n"
+            "- Use each given number exactly once.\n"
+            "- Use only + - * / and parentheses.\n"
+            "- Do NOT output '= 24' or '→ 24'.\n"
+            "- Output MUST be a single line containing only the expression.\n\n"
+            + retry_line
+            + f"Retrieved templates/context:\n{retrieval.concatenated_context}\n"
+        )
+
+        answer_text = ""
+        solve_error_type: str | None = None
+        usage = None
+        try:
+            answer_text, usage = client.chat(
+                system=system,
+                user=user,
+                temperature=temperature,
+            )
         except Exception as exc:
             solve_error_type = type(exc).__name__
 
-        prompt_tokens = _maybe_int(solve_usage.get("prompt_tokens"))
-        completion_tokens = _maybe_int(solve_usage.get("completion_tokens"))
-        attempt_total_tokens = _maybe_int(solve_usage.get("total_tokens"))
-        latency_ms = _maybe_float(solve_usage.get("latency_ms"))
+        prompt_tokens = usage.prompt_tokens if usage else None
+        completion_tokens = usage.completion_tokens if usage else None
+        attempt_total_tokens = usage.total_tokens if usage else None
+        latency_ms = usage.latency_ms if usage else None
 
         total_prompt_tokens += prompt_tokens or 0
         total_completion_tokens += completion_tokens or 0
@@ -308,13 +352,20 @@ def _solve_with_retries(
         attempt_passed = False
         reason = None
         if solve_error_type is None:
-            attempt_passed = validator.validate(answer_text, query.question)
-            if not attempt_passed:
-                reason = validator.failure_reason(answer_text, query.question)
+            raw = (answer_text or "").strip()
+            lines = raw.splitlines()
+            candidate = lines[0].strip() if lines else ""
+            attempt_passed = validator.validate(candidate, query.question)
+            if attempt_passed:
+                answer_text = candidate
+            else:
+                reason = validator.failure_reason(candidate, query.question)
+                answer_text = candidate
         else:
             reason = "solve_error"
 
         last_reason = reason
+        last_answer_text = answer_text
 
         metrics.log_call(
             StreamCallMetrics(
@@ -325,9 +376,9 @@ def _solve_with_retries(
                 operation="solve",
                 attempt_index=attempt_index,
                 temperature=temperature,
-                validator_passed=attempt_passed if solve_error_type is None else False,
+                validator_passed=attempt_passed,
                 failure_reason=reason,
-                prompt_variant="retry" if attempt_index > 1 else "base",
+                prompt_variant=prompt_variant,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=attempt_total_tokens,
@@ -336,7 +387,22 @@ def _solve_with_retries(
             )
         )
 
-        last_answer_text = answer_text
+        call_id_validate = metrics.new_call_id()
+        metrics.log_call(
+            StreamCallMetrics(
+                call_id=call_id_validate,
+                parent_id=call_id_solve,
+                t=t,
+                problem_id=problem_id,
+                operation="validate",
+                attempt_index=attempt_index,
+                temperature=temperature,
+                validator_passed=attempt_passed,
+                failure_reason=reason,
+                prompt_variant=prompt_variant,
+                error_type=None if solve_error_type is None else "skipped",
+            )
+        )
 
         if attempt_passed:
             return (
@@ -350,6 +416,7 @@ def _solve_with_retries(
                 True,
                 attempt_index,
                 None,
+                attempts_used,
             )
 
     return (
@@ -363,6 +430,7 @@ def _solve_with_retries(
         False,
         None,
         last_reason,
+        attempts_used,
     )
 
 
