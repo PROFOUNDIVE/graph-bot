@@ -17,6 +17,7 @@ class AppSettings(BaseSettings):
     llm_base_url: str = Field(default="http://127.0.0.1:2427/v1")
     llm_api_key: str = Field(default="EMPTY")
     llm_temperature: float = Field(default=0.0)
+    llm_token_cost_usd_per_1k: float = Field(default=0.0)
     embedding_model: str = Field(default="all-MiniLM-L6-v2")
 
     # GraphRAG DB connection (placeholder)
