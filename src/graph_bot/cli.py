@@ -6,12 +6,13 @@ from typing import List, Optional
 
 import typer
 
+from .logsetting import logger
 from .types import SeedData, ReasoningTree, UserQuery
 from .pipelines.build_trees import build_reasoning_trees_from_seeds
 from .adapters.graphrag import GraphRAGAdapter
 from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs
+from .pipelines.stream_loop import run_continual_stream
 from .settings import settings
-from .logsetting import logger
 
 from vllm.entrypoints.openai.api_server import run_server  # noqa: E402
 from vllm.entrypoints.openai.cli_args import (  # noqa: E402
@@ -375,6 +376,42 @@ def postprocess(
     """After T inputs, do reranking/verbalization/pruning/augmentation."""
     pruned = postprocess_after_T_inputs(t_inputs)
     typer.echo(f"Postprocess pruned {pruned} nodes after T={t_inputs} inputs")
+
+
+@app.command("stream")
+def stream(
+    problems_file: Path = typer.Argument(
+        ..., help="JSONL file of Game24 problems: {id, numbers, target?}"
+    ),
+    mode: Optional[str] = typer.Option(
+        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
+    ),
+    use_edges: Optional[bool] = typer.Option(
+        None, "--use-edges", help="Use graph edges for path construction"
+    ),
+    policy_id: Optional[str] = typer.Option(
+        None,
+        "--policy-id",
+        help="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    ),
+    validator_mode: Optional[str] = typer.Option(
+        None,
+        "--validator-mode",
+        help="Validator mode: oracle, exec_repair, weak_llm_judge",
+    ),
+    max_problems: Optional[int] = typer.Option(
+        None, "--max-problems", help="Optional limit on number of problems"
+    ),
+):
+    """Run continual stream loop for Game of 24."""
+    run_continual_stream(
+        problems_file=problems_file,
+        mode=mode,
+        use_edges=use_edges,
+        policy_id=policy_id,
+        validator_mode=validator_mode or settings.validator_mode,
+        max_problems=max_problems,
+    )
 
 
 @app.command("retrieve")
