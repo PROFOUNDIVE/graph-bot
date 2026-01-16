@@ -13,6 +13,7 @@ from .adapters.graphrag import GraphRAGAdapter
 from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs
 from .pipelines.stream_loop import run_continual_stream
 from .settings import settings
+from .utils.amortization import generate_amortization_curve
 
 from vllm.entrypoints.openai.api_server import run_server  # noqa: E402
 from vllm.entrypoints.openai.cli_args import (  # noqa: E402
@@ -412,6 +413,22 @@ def stream(
         validator_mode=validator_mode or settings.validator_mode,
         max_problems=max_problems,
     )
+
+
+@app.command("amortize")
+def amortize(
+    stream_metrics_jsonl: Path = typer.Argument(
+        ..., help="Path to *.stream.jsonl output from stream run"
+    ),
+    out_csv: Path = typer.Option(
+        Path("outputs/amortization_curve.csv"), "--out", help="Output CSV path"
+    ),
+):
+    """Generate EXP1 amortization curve from stream logs."""
+    generate_amortization_curve(
+        stream_metrics_jsonl=stream_metrics_jsonl, out_csv=out_csv
+    )
+    typer.echo(f"Wrote amortization curve CSV to {out_csv}")
 
 
 @app.command("retrieve")
