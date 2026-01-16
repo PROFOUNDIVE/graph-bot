@@ -17,6 +17,11 @@ class BaseValidator(ABC):
         """Validate answer for given problem."""
         pass
 
+    def failure_reason(self, answer: str, problem: str) -> str | None:
+        del answer
+        del problem
+        return None
+
     @abstractmethod
     def get_validator_name(self) -> str:
         """Return validator identifier for logging."""
@@ -42,6 +47,27 @@ class Game24Validator(BaseValidator):
 
     def __init__(self):
         self._pattern = re.compile(r"(-?\d+\.?\d*)")
+
+    def failure_reason(self, answer: str, problem: str) -> str | None:
+        try:
+            problem_numbers = self._extract_numbers(problem)
+            if problem_numbers and abs(problem_numbers[-1] - 24.0) < 1e-6:
+                problem_numbers = problem_numbers[:-1]
+
+            answer_numbers = self._extract_numbers(answer)
+            if sorted(problem_numbers) != sorted(answer_numbers):
+                return "wrong_numbers"
+
+            result = self._safe_eval(answer)
+            if result is None:
+                return "format_error"
+
+            if abs(result - 24.0) >= 1e-6:
+                return "math_error"
+
+            return None
+        except Exception:
+            return "format_error"
 
     def validate(self, answer: str, problem: str) -> bool:
         """Validate Game24 answer.
