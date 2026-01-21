@@ -12,7 +12,7 @@ class AppSettings(BaseSettings):
     )
 
     # LLM / embedding provider configs
-    llm_provider: str = Field(default="vllm")
+    llm_provider: str = Field(default="mock") # Default changed to mock for B3 verification
     llm_model: str = Field(default="llama3-8b-instruct")
     llm_base_url: str = Field(default="http://127.0.0.1:2427/v1")
     llm_api_key: str = Field(default="EMPTY")

@@ -308,6 +308,7 @@ def _solve_with_retries(
 ) -> tuple[str, dict[str, object], bool, int | None, str | None, int]:
     import re
 
+    from ..adapters.mock_client import MockLLMClient
     from ..adapters.vllm_openai_client import VLLMOpenAIClient
     from ..settings import settings
 
