@@ -2,7 +2,7 @@ from __future__ import annotations
 from __future__ import annotations
 
 from ..adapters.graphrag import GraphRAGAdapter
-from ..types import UserQuery, RetrievalResult
+from ..datatypes import UserQuery, RetrievalResult
 from ..settings import settings
 
 

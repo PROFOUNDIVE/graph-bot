@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from ..types import SeedData, ReasoningTree
+from ..datatypes import SeedData, ReasoningTree
 from ..adapters.hiaricl_adapter import HiARICLAdapter
 
 

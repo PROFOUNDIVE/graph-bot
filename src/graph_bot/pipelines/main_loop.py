@@ -6,7 +6,7 @@ from typing import Iterable
 from ..adapters.graphrag import GraphRAGAdapter
 from ..adapters.vllm_openai_client import VLLMOpenAIClient
 from ..settings import settings
-from ..types import LLMAnswer, RetrievalResult, SeedData, UserQuery
+from ..datatypes import LLMAnswer, RetrievalResult, SeedData, UserQuery
 from .build_trees import build_reasoning_trees_from_seeds
 from .retrieve import retrieve_k_optimal_paths
 

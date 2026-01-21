@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ..types import ReasoningTree, TidiedElements, ReasoningNode, ReasoningEdge
+from ..datatypes import ReasoningTree, TidiedElements, ReasoningNode, ReasoningEdge
 
 
 def rerank_verbalize_prune_augment(trees: List[ReasoningTree]) -> List[TidiedElements]:

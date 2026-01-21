@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Iterable, List
 
-from ..types import SeedData, ReasoningTree, ReasoningNode, ReasoningEdge
+from ..datatypes import SeedData, ReasoningTree, ReasoningNode, ReasoningEdge
 from ..settings import settings
 
 

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from ..adapters.graphrag import GraphRAGAdapter
 from ..eval.validators import BaseValidator, get_validator
 from ..pipelines.metrics_logger import StreamMetricsLogger
-from ..types import PathEvaluation, StreamCallMetrics, StreamProblemMetrics, UserQuery
+from ..datatypes import PathEvaluation, StreamCallMetrics, StreamProblemMetrics, UserQuery
 
 
 class Game24Problem(BaseModel):
@@ -240,7 +240,7 @@ def _insert_solution_template(
     problem_id: str,
     answer_text: str,
 ) -> None:
-    from ..types import ReasoningNode, ReasoningTree
+    from ..datatypes import ReasoningNode, ReasoningTree
 
     tree = ReasoningTree(
         tree_id=f"episode-{problem_id}",
@@ -328,11 +328,14 @@ def _solve_with_retries(
     total_tokens = 0
     total_latency_ms = 0.0
 
-    client = VLLMOpenAIClient(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-    )
+    if settings.llm_provider == "mock":
+        client = MockLLMClient(model=settings.llm_model)
+    else:
+        client = VLLMOpenAIClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+        )
 
     last_reason: str | None = None
     last_raw_output: str | None = None

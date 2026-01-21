@@ -7,7 +7,7 @@ from typing import List, Optional
 import typer
 
 from .logsetting import logger
-from .types import SeedData, ReasoningTree, UserQuery
+from .datatypes import SeedData, ReasoningTree, UserQuery
 from .pipelines.build_trees import build_reasoning_trees_from_seeds
 from .adapters.graphrag import GraphRAGAdapter
 from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs

@@ -4,7 +4,7 @@ import json
 import uuid
 from pathlib import Path
 
-from ..types import StreamCallMetrics, StreamCumulativeMetrics, StreamProblemMetrics
+from ..datatypes import StreamCallMetrics, StreamCumulativeMetrics, StreamProblemMetrics
 
 
 class StreamMetricsLogger:

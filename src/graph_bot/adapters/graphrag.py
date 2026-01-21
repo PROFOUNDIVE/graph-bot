@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from ..settings import settings
-from ..types import (
+from ..datatypes import (
     MetaGraph,
     PathEvaluation,
     ReasoningEdge,
