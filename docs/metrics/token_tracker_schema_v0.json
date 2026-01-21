@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TokenTrackerSchema_v0",
+  "description": "Schema for structured logging of LLM/Embedding usage events.",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "run_id",
+    "event_type",
+    "model",
+    "usage",
+    "cost_usd"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of event completion"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique correlation ID for the entire problem-solving session"
+    },
+    "parent_id": {
+      "type": "string",
+      "description": "ID of the parent span (optional, for nested calls like RAG internal steps)"
+    },
+    "span_id": {
+      "type": "string",
+      "description": "Unique ID for this specific operation"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["llm_completion", "embedding", "rag_retrieval", "tool_call"],
+      "description": "Type of operation performed"
+    },
+    "component": {
+      "type": "string",
+      "enum": ["pipeline", "auxiliary", "rag_infra", "evaluator"],
+      "description": "Classification for Cost Track A/B aggregation"
+    },
+    "model": {
+      "type": "string",
+      "description": "Model identifier (e.g., 'gpt-4o-mini', 'text-embedding-3-small')"
+    },
+    "usage": {
+      "type": "object",
+      "required": ["prompt_tokens", "completion_tokens", "total_tokens"],
+      "properties": {
+        "prompt_tokens": { "type": "integer" },
+        "completion_tokens": { "type": "integer" },
+        "total_tokens": { "type": "integer" },
+        "tokens_saved": { 
+          "type": "integer",
+          "description": "Tokens saved due to cache hits (KV/Semantic)"
+        }
+      }
+    },
+    "cost_usd": {
+      "type": "number",
+      "description": "Calculated cost for this specific event in USD"
+    },
+    "latency_ms": {
+      "type": "integer",
+      "description": "Duration of the call in milliseconds"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Arbitrary additional data (e.g., retrieval_k, temperature, cache_hit)"
+    }
+  }
+}
