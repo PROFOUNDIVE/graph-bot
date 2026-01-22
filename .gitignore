@@ -9,6 +9,7 @@ AGENTS.md
 
 # Runtime artifacts
 logs/
+outputs/
 *.log
 *.pid
 

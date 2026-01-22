@@ -88,9 +88,37 @@ graph-bot amortize outputs/stream_logs/run.stream.jsonl --out outputs/amortizati
 - `src/`: main source code
 - `configs/`: runtime configs (settings and templates)
 - `libs/`: external libraries / submodules
+- `docs/`: project documentation
+  - `docs/specs/`: schemas, I/O contracts, and design specs (source of truth)
+  - `docs/checklists/`: runbooks and pre-run checklists (human procedure)
+  - `docs/policies/`: policies and reporting rules
+  - `docs/metrics/`: metrics definitions and cost boundaries
 - `tests/`: (currently empty) test skeletons
 - `pyproject.toml`: dependencies, scripts
 - `.env.example`: env var template
+
+## Docs
+
+Start here:
+
+- `docs/checklists/integration_checklist.md`: pre-run checklist for end-to-end stream + amortization reporting
+- `docs/specs/amortization_io_contract.md`: I/O contract for `graph-bot amortize` inputs/outputs
+- `docs/specs/token_tracker_schema_v0.json`: event-level token/cost schema for usage accounting
+- `docs/policies/no_interactive_policy.md`: non-interactive execution requirements and timeout policy
+- `docs/policies/latency_reporting_policy.md`: latency reporting format (p50/p95) and outlier handling
+
+## Artifacts & Logs
+
+This repo writes two different kinds of files during runs:
+
+- `logs/`: application/runtime logs from the Python logger (`src/graph_bot/logsetting.py`).
+- `outputs/`: experiment artifacts and persisted state.
+  - `outputs/metagraph.json`: persisted MetaGraph state (default; override with `GRAPH_BOT_METAGRAPH_PATH`).
+  - `outputs/stream_logs/`: JSONL metrics from `graph-bot stream` (`<run_id>.calls.jsonl`, `<run_id>.problems.jsonl`, `<run_id>.stream.jsonl`).
+  - `outputs/test_logs*/`: ad-hoc / test run outputs used for schema/policy verification.
+  - `outputs/runs/`, `outputs/artifacts/`: optional structured output roots (see `configs/paths.yaml`).
+
+Note: `graph-bot llm-server` writes server logs to `vllm_server.log` by default.
 
 ## Technical Architecture (`src/graph_bot`)
 
