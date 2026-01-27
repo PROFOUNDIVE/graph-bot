@@ -1,0 +1,12 @@
+pricing_version: "v0"
+models:
+  gpt-4o-mini:
+    input_usd_per_1k: 0.00015
+    output_usd_per_1k: 0.00060
+    cached_input_usd_per_1k: 0.000075
+  llama3-8b-instruct:
+    input_usd_per_1k: 0.0
+    output_usd_per_1k: 0.0
+  mock:
+    input_usd_per_1k: 0.0
+    output_usd_per_1k: 0.0

@@ -20,7 +20,7 @@ dependencies = [
 hf = ["transformers>=4.42", "sentence-transformers>=3.0", "accelerate>=0.33"]
 openai = ["openai>=1.40"]
 vllm = ["vllm>=0.5"]  # 서버 연동 시
-dev = ["pytest>=8.0", "ruff>=0.5", "black>=24.0", "pre-commit>=3.7"]
+dev = ["pytest>=8.0", "ruff>=0.5", "black>=24.0", "pre-commit>=3.7", "jsonschema"]
 
 [project.scripts]
 graph-bot = "graph_bot.cli:app"  # `graph-bot ...` 로 CLI 실행
