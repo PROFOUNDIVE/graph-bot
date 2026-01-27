@@ -291,7 +291,8 @@ def llm_server(
                     fg="red",
                 )
                 try:
-                    os.kill(proc.pid, signal.SIGTERM)
+                    if proc.pid is not None:
+                        os.kill(proc.pid, signal.SIGTERM)
                 except Exception:
                     pass
                 raise typer.Exit(code=1)
@@ -440,8 +441,28 @@ def amortize(
     ),
 ):
     """Generate EXP1 amortization curve from stream logs."""
+    if not stream_metrics_jsonl.exists():
+        typer.secho(f"Error: {stream_metrics_jsonl} not found.", fg="red")
+        raise typer.Exit(code=1)
+
+    run_id = stream_metrics_jsonl.name.replace(".stream.jsonl", "")
+    log_dir = stream_metrics_jsonl.parent
+
+    problems_path = log_dir / f"{run_id}.problems.jsonl"
+    events_path = log_dir / f"{run_id}.token_events.jsonl"
+
+    if not problems_path.exists():
+        typer.secho(f"Error: Required sibling {problems_path} not found.", fg="red")
+        raise typer.Exit(code=1)
+    if not events_path.exists():
+        typer.secho(f"Error: Required sibling {events_path} not found.", fg="red")
+        raise typer.Exit(code=1)
+
     generate_amortization_curve(
-        stream_metrics_jsonl=stream_metrics_jsonl, out_csv=out_csv
+        stream_metrics_jsonl=stream_metrics_jsonl,
+        out_csv=out_csv,
+        problems_jsonl=problems_path,
+        token_events_jsonl=events_path,
     )
     typer.echo(f"Wrote amortization curve CSV to {out_csv}")
 
