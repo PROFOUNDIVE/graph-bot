@@ -133,7 +133,7 @@ Note: `graph-bot llm-server` writes server logs to `vllm_server.log` by default.
 
 ## Technical Architecture (`src/graph_bot`)
 
-### Data Models (`types.py`)
+### Data Models (`datatypes.py`)
 
 Pydantic models define the system I/O and internal representations.
 
@@ -159,12 +159,21 @@ Notable settings:
 
 - `hiaricl_adapter.py`: stub generator producing `ReasoningTree` from `SeedData`
 - `graphrag.py`: v0.1 persistent MetaGraph store + retrieval (semantic + stats)
+- `vllm_openai_client.py`: OpenAI-compatible client for vLLM
+- `mock_client.py`: Mock client for testing
 
 ### Pipelines (`pipelines/`)
 
 - `build_trees.py`: seeds → reasoning trees
 - `retrieve.py`: query → retrieval result
 - `main_loop.py`: glue layer (insert, retrieve+usage, postprocess pruning)
+- `stream_loop.py`: continual learning stream (Game of 24)
+- `metrics_logger.py`: structured JSONL logging for experiments
+- `postprocess.py`: offline graph maintenance (pruning/verbalization)
+
+### Evaluation (`eval/`)
+
+- `validators.py`: problem-specific validators (e.g., `Game24Validator`)
 
 ## Design Spec v0.1 (Summary)
 
