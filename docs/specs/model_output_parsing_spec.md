@@ -57,7 +57,10 @@ Contract rules:
 
 ## 4) Recommended Answer Markers (Reasoning Allowed)
 
-Recommended format (human-readable, easy to parse):
+Two formats are supported, prioritizing explicit markers:
+
+### Format A: Answer Block (Primary/Recommended)
+An XML-like block. This is the most robust and preferred method as it clearly delimits the answer from any preceding reasoning or chain-of-thought.
 
 ```text
 <answer>
@@ -65,29 +68,34 @@ Recommended format (human-readable, easy to parse):
 </answer>
 ```
 
-Rules:
-- The content inside the answer block is the primary extraction target.
-- Reasoning may appear before/after the block.
-- The extracted candidate is the first non-empty line within the block (after
-  trimming whitespace).
+### Format B: GoT/CoT Style (Legacy/Alternative)
+The standard GoT/CoT prompt instructs the model to output the final line starting with `Output:`. Supported for backward compatibility with existing templates.
 
-Rationale:
-- Markers decouple reasoning verbosity from extraction reliability.
-- Multi-line blocks are allowed for future tasks, but Game24 typically uses one
-  expression line.
+```text
+Output: <expression> = 24
+```
+
+or simply:
+
+```text
+Output: <expression>
+```
+
+**Extraction Priority:**
+1. **Answer Block (`<answer>`)**: Look for content within `<answer>...</answer>` tags. This is the most explicit and preferred marker.
+2. **GoT Style (`Output:`)**: If no block is found, look for the *last* line starting with `Output:`. Extract the expression, stripping any `= 24` suffix.
+3. **Fallback (Bottom-Scan)**: If neither found, scan from bottom to top for the first valid expression line.
 
 ## 5) Fallback Extraction (No Markers Present)
 
-If no `<answer>...</answer>` block is present, the parser SHOULD attempt a
-fallback extraction. For `task=game24`, recommended fallback strategy:
+If no markers are present, the parser SHOULD attempt a fallback extraction. For `task=game24`:
 
 1. Split `raw_output` into trimmed lines and scan from bottom to top.
-2. For each line, check whether it is a plausible Game24 expression (see
-   Section 6). The first plausible line becomes `candidate`.
+2. For each line, check whether it is a plausible Game24 expression (see Section 6). The first plausible line becomes `candidate`.
+   - Note: Strip `Output:` prefix or `= 24` suffix if they appear during the scan but weren't caught by strict marker logic.
 3. If none match, return empty candidate.
 
-This fallback is designed to allow models that produce reasoning followed by a
-final expression line without explicit markers.
+This fallback is designed to allow models that produce reasoning followed by a final expression line without explicit markers.
 
 ## 6) Task-Specific Parsing Rules: Game24
 
@@ -117,12 +125,12 @@ This preserves debuggability without constraining model reasoning.
 
 ## 8) Implementation Notes (Non-Normative)
 
-Recommended code refactor:
-- Replace `_normalize_candidate_line(raw_output)` with a task-aware
-  `extract_candidate_answer(raw_output, task=..., allowed_numbers=...)`.
-- Keep the validator API unchanged: `validator.validate(candidate, problem)`.
+**Recommended Code Structure:**
+- Use a task-aware extraction function that implements the extraction priority in Section 4.
+- `stream_loop.py` implements this by first checking for `<answer>` tags, then `Output:`, then falling back to a bottom-up line scan.
 
-Potential migration strategy:
-- Support both marker-based extraction and fallback scanning.
-- Update prompts to *encourage* an `<answer>...</answer>` block rather than
-  requiring a single-line output.
+**Prompt Recommendation:**
+Prompts SHOULD explicitly instruct the model to wrap the final result in `<answer>` tags. This minimizes extraction errors and allows the model to output reasoning before the final answer.
+
+Example prompt instruction:
+> "You may show intermediate steps, but you MUST enclose the final expression in `<answer>` tags: `<answer>(1 + 2) * 8 = 24</answer>`"
