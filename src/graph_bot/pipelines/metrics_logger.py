@@ -16,6 +16,7 @@ class StreamMetricsLogger:
         self._calls_path = self._out_dir / f"{run_id}.calls.jsonl"
         self._problems_path = self._out_dir / f"{run_id}.problems.jsonl"
         self._stream_path = self._out_dir / f"{run_id}.stream.jsonl"
+        self._token_events_path = self._out_dir / f"{run_id}.token_events.jsonl"
 
         self._cumulative_solved = 0
         self._cumulative_cost_usd = 0.0
@@ -43,6 +44,9 @@ class StreamMetricsLogger:
 
     def log_call(self, event: StreamCallMetrics) -> None:
         self._append_jsonl(self._calls_path, event.model_dump())
+
+    def log_token_event(self, event: dict) -> None:
+        self._append_jsonl(self._token_events_path, event)
 
     def log_problem(self, event: StreamProblemMetrics) -> StreamCumulativeMetrics:
         self._append_jsonl(self._problems_path, event.model_dump())
