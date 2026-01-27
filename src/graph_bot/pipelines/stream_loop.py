@@ -474,30 +474,52 @@ def _normalize_candidate_line(
 ) -> tuple[str, str]:
     import re
 
-    # 1. <answer> block extraction (regex DOTALL)
+    # 1. <answer> block extraction (Priority 1 per Spec)
     match = re.search(r"<answer>(.*?)</answer>", raw_output, re.DOTALL)
     if match:
         content = match.group(1).strip()
         for line in content.splitlines():
             line = line.strip()
             if line:
+                # Strip potential "= 24" suffix
+                if "=" in line:
+                    line = line.split("=")[0].strip()
                 return line, "answer_block"
 
-    # 2. Fallback: Bottom-to-top scan
+    # 2. Check for explicit "Output: <expr> = 24" format (GoT style)
+    # We look for the LAST occurrence of "Output:" if multiple exist (CoT)
+    output_matches = list(re.finditer(r"^\s*Output:\s*(.*)$", raw_output, re.MULTILINE))
+    if output_matches:
+        candidate = output_matches[-1].group(1).strip()
+        # Strip potential "= 24" suffix
+        if "=" in candidate:
+            candidate = candidate.split("=")[0].strip()
+        return candidate, "got_output_format"
+
+    # 3. Fallback: Bottom-to-top scan
     lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
     for line in reversed(lines):
+        candidate = line
+        # Strip "Output:" if present
+        if candidate.startswith("Output:"):
+            candidate = candidate[len("Output:") :].strip()
+
+        # Strip "= 24" if present
+        if "=" in candidate:
+            candidate = candidate.split("=")[0].strip()
+
         if allowed_numbers is not None:
             # Check plausibility (precheck)
             if (
                 _precheck_candidate(
-                    candidate_line=line, allowed_numbers=allowed_numbers
+                    candidate_line=candidate, allowed_numbers=allowed_numbers
                 )
                 is None
             ):
-                return line, "fallback_bottom_scan"
+                return candidate, "fallback_bottom_scan"
         else:
             # If no numbers provided, just return the last non-empty line
-            return line, "fallback_bottom_scan"
+            return candidate, "fallback_bottom_scan"
 
     return "", "empty"
 
@@ -514,6 +536,8 @@ def _precheck_candidate(
     if not candidate_line:
         return "empty_output"
 
+    # GoT style might leave some artifacts, but we stripped '=' in normalize.
+    # So we strictly forbid '=' and '->' here to ensure clean expression.
     if "→" in candidate_line or "=" in candidate_line:
         return "format_error"
 
@@ -554,16 +578,77 @@ def _solve_with_retries(
         settings.retry_temperature_3,
     ]
 
+    # GoT Prompts (Source: graph-of-thoughts/tasks/gameof24.py)
+    got_io_system = """You are playing the 24 Game.
+
+Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
+Parentheses are allowed. Create one valid expression that equals 24.
+
+Output must follow the example format as closely as possible: a single line of the form
+<expression> = 24
+Do not include any additional explanation or text."""
+
+    got_io_user_template = """<Example>
+Input: 4 9 10 13
+Output: (10 - 4) * (13 - 9) = 24
+</Example>
+
+Input: {input}
+Output:"""
+
+    got_cot_system = """You are playing the 24 Game.
+
+Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
+Parentheses are allowed. Find one valid expression that equals 24.
+
+You may show intermediate steps, but you MUST enclose the final expression in <answer> tags:
+<answer>(1 + 2) * 8 = 24</answer>
+Do not include any additional text inside the tags."""
+
+    got_cot_user_template = """<Examples>
+Input: 4 9 10 13
+Work:
+(10 - 4) = 6
+(13 - 9) = 4
+6 * 4 = 24
+<answer>(10 - 4) * (13 - 9) = 24</answer>
+
+Input: 1 3 4 6
+Work:
+(6 / 3) = 2
+4 * 2 = 8
+8 * 3 = 24  (using 1 and 3? not allowed) -> backtrack
+(4 - 1) = 3
+6 * 3 = 18
+18 + 3 = 21 -> backtrack
+(6 - 1) = 5
+5 * 4 = 20
+20 + 3 = 23 -> backtrack
+(6 - 4) = 2
+3 * 2 = 6
+6 * 4 = 24 (uses 4 twice) -> backtrack
+(6 / (1 - 3/4)) = 24
+<answer>6 / (1 - 3/4) = 24</answer>
+</Examples>
+
+Input: {input}
+"""
+
     pattern = re.compile(r"(-?\d+\.?\d*)")
     numbers = [int(float(x)) for x in pattern.findall(query.question)[:4]]
     numbers_str = " ".join(str(x) for x in numbers)
 
-    system = "You solve Game of 24. Output only an arithmetic expression."
-    if mode == "cot":
-        system = (
-            "You solve Game of 24. Think step by step. "
-            "Finally, output ONLY the arithmetic expression inside <answer>...</answer> tags."
-        )
+    if mode == "io":
+        system = got_io_system
+        user_template = got_io_user_template.format(input=numbers_str)
+    elif mode == "cot":
+        system = got_cot_system
+        user_template = got_cot_user_template.format(input=numbers_str)
+    else:
+        # graph_bot mode now uses CoT style (multi-line reasoning)
+        system = got_cot_system
+        base_user = got_cot_user_template.format(input=numbers_str)
+        user_template = f"{base_user}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n"
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -592,47 +677,17 @@ def _solve_with_retries(
 
         prompt_variant = f"{mode}:base" if attempt_index == 1 else f"{mode}:retry"
 
-        retry_line = ""
+        current_user = user_template
         if attempt_index > 1 and last_reason:
             prev = (last_raw_output or "").strip()
             retry_line = (
-                "Previous attempt was invalid.\n"
+                "\n\nPrevious attempt was invalid.\n"
                 f"Reason: {last_reason}\n"
-                f"Previous raw output (verbatim):\n{prev}\n\n"
-                "Fix it and return ONLY a corrected expression.\n"
+                f"Previous output: {prev}\n"
+                "Please fix it. Output ONLY the arithmetic expression in the format:\n"
+                "Output: <expression> = 24"
             )
-            if mode == "cot":
-                retry_line += (
-                    "Ensure the final expression is inside <answer>...</answer> tags.\n"
-                )
-            else:
-                retry_line += "Checklist:\n"
-                retry_line += "- One line only (no explanation).\n"
-                retry_line += "- Use each given number exactly once as a standalone number token.\n"
-                retry_line += (
-                    "- Never concatenate digits (e.g., 9 and 9 must not become 99).\n"
-                )
-                retry_line += "- Only + - * / and parentheses.\n"
-                retry_line += "- Must evaluate to 24.\n\n"
-
-        if mode == "cot":
-            rules_line = (
-                "- Think step by step before answering.\n"
-                "- Use each given number exactly once.\n"
-                "- Use only + - * / and parentheses.\n"
-                "- Output the final expression inside <answer>...</answer> tags.\n"
-            )
-        else:
-            rules_line = (
-                "- Use each given number exactly once.\n"
-                "- Use only + - * / and parentheses.\n"
-                "- Do NOT output '= 24' or '→ 24'.\n"
-                "- Output MUST be a single line containing only the expression.\n"
-            )
-
-        user = f"Numbers: {numbers_str}\n\n" "Rules:\n" + rules_line + "\n" + retry_line
-        if mode not in {"io", "cot"}:
-            user += f"Retrieved templates/context:\n{retrieval.concatenated_context}\n"
+            current_user += retry_line
 
         answer_text = ""
         solve_error_type: str | None = None
@@ -640,7 +695,7 @@ def _solve_with_retries(
         try:
             answer_text, usage = client.chat(
                 system=system,
-                user=user,
+                user=current_user,
                 temperature=temperature,
             )
         except TimeoutException:

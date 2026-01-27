@@ -27,6 +27,35 @@ def test_normalize_candidate_line():
         "1+2+3+4",
         "fallback_bottom_scan",
     )
+    assert _normalize_candidate_line("Output: (1+2+3)*4 = 24") == (
+        "(1+2+3)*4",
+        "got_output_format",
+    )
+
+
+def test_normalize_candidate_priority_and_edge_cases():
+    # 1. Conflict: <answer>A</answer> vs Output: B -> Expect A.
+    raw_1 = """
+    Reasoning...
+    Output: (1+2+3)*4 = 24
+    <answer>(4-1)*8 = 24</answer>
+    """
+    assert _normalize_candidate_line(raw_1) == ("(4-1)*8", "answer_block")
+
+    # 2. Malformed: <answer>A vs Output: B -> Expect B.
+    raw_2 = """
+    Reasoning...
+    Output: (1+2+3)*4 = 24
+    <answer>(4-1)*8 = 24
+    """
+    assert _normalize_candidate_line(raw_2) == ("(1+2+3)*4", "got_output_format")
+
+    # 3. Multiple: <answer>A</answer> ... <answer>B</answer> -> Expect A (current regex behavior).
+    raw_3 = """
+    <answer>(1+2+3)*4 = 24</answer>
+    <answer>(4-1)*8 = 24</answer>
+    """
+    assert _normalize_candidate_line(raw_3) == ("(1+2+3)*4", "answer_block")
 
 
 def test_stream_contract_and_schema():

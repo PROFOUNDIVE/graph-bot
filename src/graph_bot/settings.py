@@ -47,7 +47,7 @@ class AppSettings(BaseSettings):
     # Continual stream config (v0.2)
     mode: str = Field(
         default="graph_bot",
-        description="Execution mode: graph_bot or flat_template_rag",
+        description="Execution mode: graph_bot or io or cot",
     )
     use_edges: bool = Field(
         default=True, description="Use graph edges for path construction"
