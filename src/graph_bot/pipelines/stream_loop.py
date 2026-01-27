@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import datetime
 import json
+import signal
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
 from ..adapters.graphrag import GraphRAGAdapter
+from ..datatypes import (
+    PathEvaluation,
+    RetrievalResult,
+    StreamCallMetrics,
+    StreamProblemMetrics,
+    UserQuery,
+)
 from ..eval.validators import BaseValidator, get_validator
 from ..pipelines.metrics_logger import StreamMetricsLogger
-from ..datatypes import PathEvaluation, StreamCallMetrics, StreamProblemMetrics, UserQuery
+from ..utils.pricing import calculate_cost, load_pricing_table
 
 
 class Game24Problem(BaseModel):
@@ -27,6 +37,14 @@ class Game24Problem(BaseModel):
         metadata = self.metadata or {}
         metadata["task"] = "game24"
         return UserQuery(id=self.id, question=question, metadata=metadata)
+
+
+class TimeoutException(Exception):
+    pass
+
+
+def timeout_handler(signum, frame):
+    raise TimeoutException("Problem processing timed out")
 
 
 def load_game24_problems(file_path: Path) -> List[Game24Problem]:
@@ -70,122 +88,314 @@ def run_continual_stream(
     validator = get_validator(validator_mode)
     metrics = StreamMetricsLogger(out_dir=metrics_out_dir, run_id=run_id)
 
+    pricing_table = load_pricing_table(settings.pricing_path)
+    if settings.llm_model not in pricing_table.get("models", {}):
+        raise ValueError(
+            f"Model {settings.llm_model} not found in pricing table at {settings.pricing_path}. "
+            f"Available models: {list(pricing_table.get('models', {}).keys())}"
+        )
+
     results: list[dict[str, object]] = []
 
-    for t, problem in enumerate(problems, 1):
-        problem_id = problem.id
-        query = problem.to_user_query()
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    try:
+        for t, problem in enumerate(problems, 1):
+            problem_id = problem.id
+            query = problem.to_user_query()
+            start_problem = time.perf_counter()
 
-        call_id_retrieve = metrics.new_call_id()
-        metrics.log_call(
-            StreamCallMetrics(
-                call_id=call_id_retrieve,
-                parent_id=None,
-                t=t,
-                problem_id=problem_id,
-                operation="retrieve",
-            )
-        )
+            active_mode = mode or settings.mode
+            active_policy_id = policy_id or settings.policy_id
 
-        active_mode = mode or settings.mode
-        active_policy_id = policy_id or settings.policy_id
+            adapter.mode = active_mode
+            adapter.policy_id = active_policy_id
 
-        adapter.mode = active_mode
-        adapter.policy_id = active_policy_id
+            is_baseline = active_mode in {"io", "cot"}
 
-        retrieval = adapter.retrieve_paths(query, k=settings.top_k_paths)
-        adapter.register_usage(retrieval.paths)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, settings.execution_timeout_sec)
 
-        reuse_count = sum(len(p.node_ids) for p in retrieval.paths)
-        contaminated = _count_contaminated_templates(
-            adapter.export_graph(), retrieval.paths
-        )
-        contamination_rate = None
-        if reuse_count > 0:
-            contamination_rate = contaminated / reuse_count
+                if is_baseline:
+                    retrieval = RetrievalResult(
+                        query_id=query.id, paths=[], concatenated_context=""
+                    )
+                    latency_ret_ms = 0.0
+                    ret_error_type = "skipped_mode"
+                else:
+                    start_ret = time.perf_counter()
+                    retrieval = adapter.retrieve_paths(query, k=settings.top_k_paths)
+                    latency_ret_ms = (time.perf_counter() - start_ret) * 1000.0
+                    ret_error_type = None
 
-        (
-            answer_text,
-            aggregate_usage,
-            solved,
-            solved_attempt,
-            _last_reason,
-            attempts_used,
-        ) = _solve_with_retries(
-            query=query,
-            retrieval=retrieval,
-            validator=validator,
-            metrics=metrics,
-            parent_call_id=call_id_retrieve,
-            t=t,
-            problem_id=problem_id,
-        )
-
-        solve_tokens_total = _maybe_int(aggregate_usage.get("total_tokens"))
-        solve_latency_ms = _maybe_float(aggregate_usage.get("latency_ms"))
-
-        evaluations = []
-        for path in retrieval.paths:
-            evaluations.append(
-                PathEvaluation(
-                    path_id=path.path_id,
-                    node_ids=path.node_ids,
-                    success=solved,
-                    tokens=solve_tokens_total,
-                    latency_ms=solve_latency_ms,
-                    cost_usd=None,
+                call_id_retrieve = metrics.new_call_id()
+                metrics.log_call(
+                    StreamCallMetrics(
+                        call_id=call_id_retrieve,
+                        parent_id=None,
+                        t=t,
+                        problem_id=problem_id,
+                        operation="retrieve",
+                        latency_ms=latency_ret_ms,
+                        api_cost_usd=0.0,
+                        error_type=ret_error_type,
+                    )
                 )
-            )
-        adapter.update_with_feedback(evaluations)
+                metrics.log_token_event(
+                    {
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                        "stream_run_id": metrics.run_id,
+                        "problem_id": problem_id,
+                        "t": t,
+                        "event_type": "rag_retrieval",
+                        "operation": "retrieve",
+                        "status": "success" if not ret_error_type else "skipped",
+                        "model": settings.embedding_model,
+                        "latency_ms": int(round(latency_ret_ms)),
+                        "run_id": f"{metrics.run_id}:{problem_id}",
+                        "span_id": call_id_retrieve,
+                        "component": "rag_infra",
+                        "metadata": {"pricing_version": "v0", "mode": active_mode},
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                        "cost_usd": 0.0,
+                    }
+                )
 
-        if solved:
-            _insert_solution_template(
-                adapter=adapter,
-                problem_id=problem_id,
-                answer_text=answer_text,
-            )
+                if not is_baseline:
+                    adapter.register_usage(retrieval.paths)
 
-        memory = adapter.export_graph()
+                reuse_count = sum(len(p.node_ids) for p in retrieval.paths)
+                contaminated = _count_contaminated_templates(
+                    adapter.export_graph(), retrieval.paths
+                )
+                contamination_rate = None
+                if reuse_count > 0:
+                    contamination_rate = contaminated / reuse_count
 
-        tokens_total = solve_tokens_total or 0
-        latency_total_ms = solve_latency_ms or 0.0
-        api_cost_usd = 0.0
-        if settings.llm_provider == "vllm" and settings.llm_token_cost_usd_per_1k > 0:
-            api_cost_usd = (tokens_total / 1000.0) * settings.llm_token_cost_usd_per_1k
+                (
+                    answer_text,
+                    aggregate_usage,
+                    solved,
+                    solved_attempt,
+                    _last_reason,
+                    attempts_used,
+                ) = _solve_with_retries(
+                    query=query,
+                    retrieval=retrieval,
+                    validator=validator,
+                    metrics=metrics,
+                    pricing_table=pricing_table,
+                    parent_call_id=call_id_retrieve,
+                    t=t,
+                    problem_id=problem_id,
+                    mode=active_mode,
+                )
 
-        attempts_used = max(1, attempts_used)
-        success_rate = (1.0 / attempts_used) if solved else 0.0
+                solve_prompt_tokens = _maybe_int(aggregate_usage.get("prompt_tokens"))
+                solve_completion_tokens = _maybe_int(
+                    aggregate_usage.get("completion_tokens")
+                )
+                solve_tokens_total = _maybe_int(aggregate_usage.get("total_tokens"))
+                solve_latency_ms = _maybe_float(aggregate_usage.get("latency_ms"))
 
-        problem_metrics = StreamProblemMetrics(
-            t=t,
-            problem_id=problem_id,
-            solved=solved,
-            attempts=attempts_used,
-            solved_attempt=solved_attempt,
-            attempt_success_rate=success_rate,
-            llm_calls=attempts_used,
-            tokens_total=tokens_total,
-            latency_total_ms=latency_total_ms,
-            api_cost_usd=api_cost_usd,
-            retrieval_hit=len(retrieval.paths) > 0,
-            reuse_count=reuse_count,
-            memory_n_nodes=len(memory.nodes),
-            memory_n_edges=len(memory.edges),
-            contamination_rate=contamination_rate,
-        )
-        cumulative = metrics.log_problem(problem_metrics)
+                if not is_baseline:
+                    evaluations = []
+                    for path in retrieval.paths:
+                        evaluations.append(
+                            PathEvaluation(
+                                path_id=path.path_id,
+                                node_ids=path.node_ids,
+                                success=solved,
+                                tokens=solve_tokens_total,
+                                latency_ms=solve_latency_ms,
+                                cost_usd=None,
+                            )
+                        )
+                    adapter.update_with_feedback(evaluations)
 
-        results.append(
-            {
-                "t": t,
-                "problem_id": problem_id,
-                "solved": solved,
-                "reuse_count": reuse_count,
-                "contamination_rate": contamination_rate,
-                "cumulative_cost": cumulative.cumulative_api_cost_usd,
-                "cost_per_solved": cumulative.cost_per_solved,
-            }
-        )
+                    if solved:
+                        _insert_solution_template(
+                            adapter=adapter,
+                            problem_id=problem_id,
+                            answer_text=answer_text,
+                        )
+
+                signal.setitimer(signal.ITIMER_REAL, 0)
+
+                memory = adapter.export_graph()
+
+                tokens_total = solve_tokens_total or 0
+                latency_total_ms = solve_latency_ms or 0.0
+                api_cost_usd = calculate_cost(
+                    pricing_table=pricing_table,
+                    model_name=settings.llm_model,
+                    prompt_tokens=solve_prompt_tokens or 0,
+                    completion_tokens=solve_completion_tokens or 0,
+                )
+
+                attempts_used = max(1, attempts_used)
+                success_rate = (1.0 / attempts_used) if solved else 0.0
+
+                problem_metrics = StreamProblemMetrics(
+                    t=t,
+                    problem_id=problem_id,
+                    solved=solved,
+                    attempts=attempts_used,
+                    solved_attempt=solved_attempt,
+                    attempt_success_rate=success_rate,
+                    llm_calls=attempts_used,
+                    tokens_total=tokens_total,
+                    latency_total_ms=latency_total_ms,
+                    api_cost_usd=api_cost_usd,
+                    retrieval_hit=len(retrieval.paths) > 0,
+                    reuse_count=reuse_count,
+                    memory_n_nodes=len(memory.nodes),
+                    memory_n_edges=len(memory.edges),
+                    contamination_rate=contamination_rate,
+                )
+                cumulative = metrics.log_problem(problem_metrics)
+
+                results.append(
+                    {
+                        "t": t,
+                        "problem_id": problem_id,
+                        "solved": solved,
+                        "reuse_count": reuse_count,
+                        "contamination_rate": contamination_rate,
+                        "cumulative_cost": cumulative.cumulative_api_cost_usd,
+                        "cost_per_solved": cumulative.cost_per_solved,
+                    }
+                )
+
+            except TimeoutException:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                latency_ms = (time.perf_counter() - start_problem) * 1000.0
+
+                metrics.log_call(
+                    StreamCallMetrics(
+                        call_id=metrics.new_call_id(),
+                        parent_id=None,
+                        t=t,
+                        problem_id=problem_id,
+                        operation="timeout",
+                        latency_ms=latency_ms,
+                        api_cost_usd=0.0,
+                        error_type="ERR_TIMEOUT",
+                    )
+                )
+                metrics.log_token_event(
+                    {
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                        "stream_run_id": metrics.run_id,
+                        "problem_id": problem_id,
+                        "t": t,
+                        "event_type": "llm_completion",
+                        "operation": "timeout",
+                        "status": "timeout",
+                        "model": settings.llm_model,
+                        "latency_ms": int(round(latency_ms)),
+                        "run_id": f"{metrics.run_id}:{problem_id}",
+                        "span_id": metrics.new_call_id(),
+                        "component": "pipeline",
+                        "metadata": {"pricing_version": "v0"},
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                        "cost_usd": 0.0,
+                    }
+                )
+                problem_metrics = StreamProblemMetrics(
+                    t=t,
+                    problem_id=problem_id,
+                    solved=False,
+                    attempts=0,
+                    solved_attempt=None,
+                    attempt_success_rate=0.0,
+                    llm_calls=0,
+                    tokens_total=0,
+                    latency_total_ms=latency_ms,
+                    api_cost_usd=0.0,
+                    retrieval_hit=False,
+                    reuse_count=0,
+                    memory_n_nodes=0,
+                    memory_n_edges=0,
+                    contamination_rate=None,
+                )
+                metrics.log_problem(problem_metrics)
+                results.append(
+                    {
+                        "t": t,
+                        "problem_id": problem_id,
+                        "solved": False,
+                        "error": "timeout",
+                    }
+                )
+
+            except Exception as e:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                latency_ms = (time.perf_counter() - start_problem) * 1000.0
+                error_type = type(e).__name__
+
+                metrics.log_token_event(
+                    {
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                        "stream_run_id": metrics.run_id,
+                        "problem_id": problem_id,
+                        "t": t,
+                        "event_type": "llm_completion",
+                        "operation": "error",
+                        "status": "error",
+                        "model": settings.llm_model,
+                        "latency_ms": int(round(latency_ms)),
+                        "run_id": f"{metrics.run_id}:{problem_id}",
+                        "span_id": metrics.new_call_id(),
+                        "component": "pipeline",
+                        "metadata": {"pricing_version": "v0", "error": str(e)},
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                        "cost_usd": 0.0,
+                    }
+                )
+                problem_metrics = StreamProblemMetrics(
+                    t=t,
+                    problem_id=problem_id,
+                    solved=False,
+                    attempts=0,
+                    solved_attempt=None,
+                    attempt_success_rate=0.0,
+                    llm_calls=0,
+                    tokens_total=0,
+                    latency_total_ms=latency_ms,
+                    api_cost_usd=0.0,
+                    retrieval_hit=False,
+                    reuse_count=0,
+                    memory_n_nodes=0,
+                    memory_n_edges=0,
+                    contamination_rate=None,
+                )
+                metrics.log_problem(problem_metrics)
+                results.append(
+                    {
+                        "t": t,
+                        "problem_id": problem_id,
+                        "solved": False,
+                        "error": error_type,
+                    }
+                )
+
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+
+    finally:
+        signal.signal(signal.SIGALRM, old_handler)
 
     return results
 
@@ -259,12 +469,36 @@ def _insert_solution_template(
     adapter.insert_trees([tree])
 
 
-def _normalize_candidate_line(raw_output: str) -> tuple[str, str]:
-    raw = raw_output.strip()
-    lines = [line.strip() for line in raw.splitlines()]
-    for line in lines:
-        if line:
-            return line, "first_non_empty_line"
+def _normalize_candidate_line(
+    raw_output: str, allowed_numbers: list[int] | None = None
+) -> tuple[str, str]:
+    import re
+
+    # 1. <answer> block extraction (regex DOTALL)
+    match = re.search(r"<answer>(.*?)</answer>", raw_output, re.DOTALL)
+    if match:
+        content = match.group(1).strip()
+        for line in content.splitlines():
+            line = line.strip()
+            if line:
+                return line, "answer_block"
+
+    # 2. Fallback: Bottom-to-top scan
+    lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if allowed_numbers is not None:
+            # Check plausibility (precheck)
+            if (
+                _precheck_candidate(
+                    candidate_line=line, allowed_numbers=allowed_numbers
+                )
+                is None
+            ):
+                return line, "fallback_bottom_scan"
+        else:
+            # If no numbers provided, just return the last non-empty line
+            return line, "fallback_bottom_scan"
+
     return "", "empty"
 
 
@@ -302,9 +536,11 @@ def _solve_with_retries(
     retrieval,
     validator: BaseValidator,
     metrics: StreamMetricsLogger,
+    pricing_table: dict[str, Any],
     parent_call_id: str,
     t: int,
     problem_id: str,
+    mode: str = "graph_bot",
 ) -> tuple[str, dict[str, object], bool, int | None, str | None, int]:
     import re
 
@@ -323,6 +559,11 @@ def _solve_with_retries(
     numbers_str = " ".join(str(x) for x in numbers)
 
     system = "You solve Game of 24. Output only an arithmetic expression."
+    if mode == "cot":
+        system = (
+            "You solve Game of 24. Think step by step. "
+            "Finally, output ONLY the arithmetic expression inside <answer>...</answer> tags."
+        )
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -349,7 +590,7 @@ def _solve_with_retries(
 
         call_id_solve = metrics.new_call_id()
 
-        prompt_variant = "base" if attempt_index == 1 else "retry"
+        prompt_variant = f"{mode}:base" if attempt_index == 1 else f"{mode}:retry"
 
         retry_line = ""
         if attempt_index > 1 and last_reason:
@@ -359,24 +600,39 @@ def _solve_with_retries(
                 f"Reason: {last_reason}\n"
                 f"Previous raw output (verbatim):\n{prev}\n\n"
                 "Fix it and return ONLY a corrected expression.\n"
-                "Checklist:\n"
-                "- One line only (no explanation).\n"
-                "- Use each given number exactly once as a standalone number token.\n"
-                "- Never concatenate digits (e.g., 9 and 9 must not become 99).\n"
-                "- Only + - * / and parentheses.\n"
-                "- Must evaluate to 24.\n\n"
+            )
+            if mode == "cot":
+                retry_line += (
+                    "Ensure the final expression is inside <answer>...</answer> tags.\n"
+                )
+            else:
+                retry_line += "Checklist:\n"
+                retry_line += "- One line only (no explanation).\n"
+                retry_line += "- Use each given number exactly once as a standalone number token.\n"
+                retry_line += (
+                    "- Never concatenate digits (e.g., 9 and 9 must not become 99).\n"
+                )
+                retry_line += "- Only + - * / and parentheses.\n"
+                retry_line += "- Must evaluate to 24.\n\n"
+
+        if mode == "cot":
+            rules_line = (
+                "- Think step by step before answering.\n"
+                "- Use each given number exactly once.\n"
+                "- Use only + - * / and parentheses.\n"
+                "- Output the final expression inside <answer>...</answer> tags.\n"
+            )
+        else:
+            rules_line = (
+                "- Use each given number exactly once.\n"
+                "- Use only + - * / and parentheses.\n"
+                "- Do NOT output '= 24' or '→ 24'.\n"
+                "- Output MUST be a single line containing only the expression.\n"
             )
 
-        user = (
-            f"Numbers: {numbers_str}\n\n"
-            "Rules:\n"
-            "- Use each given number exactly once.\n"
-            "- Use only + - * / and parentheses.\n"
-            "- Do NOT output '= 24' or '→ 24'.\n"
-            "- Output MUST be a single line containing only the expression.\n\n"
-            + retry_line
-            + f"Retrieved templates/context:\n{retrieval.concatenated_context}\n"
-        )
+        user = f"Numbers: {numbers_str}\n\n" "Rules:\n" + rules_line + "\n" + retry_line
+        if mode not in {"io", "cot"}:
+            user += f"Retrieved templates/context:\n{retrieval.concatenated_context}\n"
 
         answer_text = ""
         solve_error_type: str | None = None
@@ -387,6 +643,8 @@ def _solve_with_retries(
                 user=user,
                 temperature=temperature,
             )
+        except TimeoutException:
+            raise
         except Exception as exc:
             solve_error_type = type(exc).__name__
 
@@ -401,7 +659,9 @@ def _solve_with_retries(
         total_latency_ms += latency_ms or 0.0
 
         raw_output = answer_text or ""
-        candidate_line, normalization = _normalize_candidate_line(raw_output)
+        candidate_line, normalization = _normalize_candidate_line(
+            raw_output, allowed_numbers=numbers
+        )
 
         attempt_passed = False
         reason = None
@@ -412,6 +672,7 @@ def _solve_with_retries(
                 candidate_line=candidate_line,
                 allowed_numbers=numbers,
             )
+            start_val = time.perf_counter()
             if precheck_failure_reason is None:
                 attempt_passed = validator.validate(candidate_line, query.question)
                 if attempt_passed:
@@ -422,12 +683,21 @@ def _solve_with_retries(
             else:
                 reason = precheck_failure_reason
                 answer_text = candidate_line
+            latency_val_ms = (time.perf_counter() - start_val) * 1000.0
         else:
             reason = "solve_error"
+            latency_val_ms = 0.0
 
         last_reason = reason
         last_raw_output = raw_output
         last_answer_text = answer_text
+
+        attempt_api_cost_usd = calculate_cost(
+            pricing_table=pricing_table,
+            model_name=settings.llm_model,
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+        )
 
         metrics.log_call(
             StreamCallMetrics(
@@ -444,13 +714,37 @@ def _solve_with_retries(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=attempt_total_tokens,
-                latency_ms=latency_ms,
+                latency_ms=latency_ms or 0.0,
+                api_cost_usd=attempt_api_cost_usd,
                 error_type=solve_error_type,
                 raw_output=raw_output,
                 candidate_line=candidate_line,
                 normalization=normalization,
                 precheck_failure_reason=precheck_failure_reason,
             )
+        )
+        metrics.log_token_event(
+            {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "stream_run_id": metrics.run_id,
+                "problem_id": problem_id,
+                "t": t,
+                "event_type": "llm_completion",
+                "operation": "solve",
+                "status": "failed" if solve_error_type else "success",
+                "model": settings.llm_model,
+                "latency_ms": int(round(latency_ms or 0.0)),
+                "run_id": f"{metrics.run_id}:{problem_id}",
+                "span_id": call_id_solve,
+                "component": "pipeline",
+                "metadata": {"pricing_version": "v0"},
+                "usage": {
+                    "prompt_tokens": prompt_tokens or 0,
+                    "completion_tokens": completion_tokens or 0,
+                    "total_tokens": attempt_total_tokens or 0,
+                },
+                "cost_usd": float(attempt_api_cost_usd),
+            }
         )
 
         call_id_validate = metrics.new_call_id()
@@ -474,12 +768,37 @@ def _solve_with_retries(
                 validator_passed=attempt_passed,
                 failure_reason=reason,
                 prompt_variant=prompt_variant,
+                latency_ms=latency_val_ms,
+                api_cost_usd=0.0,
                 error_type=validate_error_type,
                 raw_output=raw_output,
                 candidate_line=candidate_line,
                 normalization=normalization,
                 precheck_failure_reason=precheck_failure_reason,
             )
+        )
+        metrics.log_token_event(
+            {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "stream_run_id": metrics.run_id,
+                "problem_id": problem_id,
+                "t": t,
+                "event_type": "tool_call",
+                "operation": "validate",
+                "status": "failed" if validate_error_type else "success",
+                "model": settings.validator_mode,
+                "latency_ms": int(round(latency_val_ms)),
+                "run_id": f"{metrics.run_id}:{problem_id}",
+                "span_id": call_id_validate,
+                "component": "evaluator",
+                "metadata": {"pricing_version": "v0"},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "cost_usd": 0.0,
+            }
         )
 
         if attempt_passed:
