@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .vscode/
+scripts/report_*.sh
 
 # Agent instructions (local)
 AGENTS.md
