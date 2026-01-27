@@ -17,7 +17,7 @@ We adopt a **Hard Timeout** strategy to cover all forms of hanging (interactive 
 1.  **Timeout Utility**: Use standard libraries (e.g., `func_timeout` or `signal`) to wrap the main execution logic.
 2.  **Configuration**:
     *   Default Timeout: **60 seconds** (adjustable via config).
-    *   Environment Variable: `EXECUTION_TIMEOUT_SEC=60`.
+    *   Environment Variable: `GRAPH_BOT_EXECUTION_TIMEOUT_SEC=60.0`.
 
 ```python
 from func_timeout import func_timeout, FunctionTimedOut

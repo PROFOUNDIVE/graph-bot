@@ -1,6 +1,6 @@
 # Model Output Parsing Spec (Reasoning-Friendly)
 
-**Status:** Draft (v0)
+**Status:** Verified (v0.2)
 
 This document defines a reasoning-friendly contract between:
 - model raw outputs (which may include multi-line reasoning),

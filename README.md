@@ -51,6 +51,13 @@ overridden with `GRAPH_BOT_METAGRAPH_PATH`.
 Run a continual Game-of-24 stream that accumulates templates into the MetaGraph
 and emits JSONL metrics (per-call, per-problem, cumulative stream metrics).
 
+Supports multiple modes:
+- `--mode graph_bot`: Full Graph-BoT pipeline (default).
+- `--mode io`: Baseline IO prompting (single-query).
+- `--mode cot`: Baseline Chain-of-Thought (single-query).
+
+For production-style runs using OpenAI models, see `scripts/run_g2_openai.sh`.
+
 1) Prepare a JSONL problems file (one per line):
 
 ```json
@@ -114,7 +121,11 @@ This repo writes two different kinds of files during runs:
 - `logs/`: application/runtime logs from the Python logger (`src/graph_bot/logsetting.py`).
 - `outputs/`: experiment artifacts and persisted state.
   - `outputs/metagraph.json`: persisted MetaGraph state (default; override with `GRAPH_BOT_METAGRAPH_PATH`).
-  - `outputs/stream_logs/`: JSONL metrics from `graph-bot stream` (`<run_id>.calls.jsonl`, `<run_id>.problems.jsonl`, `<run_id>.stream.jsonl`).
+  - `outputs/stream_logs/`: JSONL metrics from `graph-bot stream`.
+    - `<run_id>.calls.jsonl`: Individual LLM call metrics.
+    - `<run_id>.problems.jsonl`: Per-problem aggregated metrics.
+    - `<run_id>.stream.jsonl`: Cumulative stream metrics.
+    - `<run_id>.token_events.jsonl`: Event-level usage/cost logs (G2 instrumentation).
   - `outputs/test_logs*/`: ad-hoc / test run outputs used for schema/policy verification.
   - `outputs/runs/`, `outputs/artifacts/`: optional structured output roots (see `configs/paths.yaml`).
 
@@ -139,6 +150,8 @@ Settings are managed via environment variables prefixed with `GRAPH_BOT_`.
 Notable settings:
 
 - `GRAPH_BOT_METAGRAPH_PATH`: JSON persistence location
+- `GRAPH_BOT_PRICING_PATH`: path to pricing YAML (default: `configs/pricing/pricing_v0.yaml`)
+- `GRAPH_BOT_EXECUTION_TIMEOUT_SEC`: per-problem hard timeout (default: `60.0`)
 - `GRAPH_BOT_TOP_K_PATHS`: retrieval top-k
 - `GRAPH_BOT_EMA_ALPHA`, `GRAPH_BOT_EMA_TAU_DAYS`: update/pruning parameters
 
