@@ -131,3 +131,24 @@ Q3: How do we aggregate in multi-thread runs?
   - Each event carries a problem-session `run_id` and unique `span_id`.
   - Aggregation groups by problem-session `run_id` regardless of wall-clock
     overlap.
+
+## 7) G2 Smoke Run Definition
+
+This run confirms the integration of pricing, timeout, and logging components.
+
+- **Problems Fixture**: `tests/fixtures/game24_smoke.jsonl`
+- **Environment Variables**:
+  - `GRAPH_BOT_METAGRAPH_PATH=outputs/metagraph_smoke.json`
+  - `GRAPH_BOT_PRICING_PATH=configs/pricing/pricing_v0.yaml`
+  - `GRAPH_BOT_EXECUTION_TIMEOUT_SEC=60`
+  - `GRAPH_BOT_LLM_PROVIDER=mock`
+  - `GRAPH_BOT_LLM_MODEL=mock`
+- **Expected Outputs**:
+  - `outputs/stream_logs/g2_smoke_1.calls.jsonl`
+  - `outputs/stream_logs/g2_smoke_1.problems.jsonl`
+  - `outputs/stream_logs/g2_smoke_1.stream.jsonl`
+  - `outputs/stream_logs/g2_smoke_1.token_events.jsonl`
+- **Command (Copy-Pasteable)**:
+  ```bash
+  GRAPH_BOT_LLM_PROVIDER=mock GRAPH_BOT_LLM_MODEL=mock GRAPH_BOT_METAGRAPH_PATH=outputs/metagraph_smoke.json GRAPH_BOT_PRICING_PATH=configs/pricing/pricing_v0.yaml GRAPH_BOT_EXECUTION_TIMEOUT_SEC=60 graph-bot stream tests/fixtures/game24_smoke.jsonl --run-id g2_smoke_1 --metrics-out-dir outputs/stream_logs --mode graph_bot --use-edges --policy-id semantic_topK_stats_rerank --validator-mode oracle --max-problems 3
+  ```

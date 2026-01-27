@@ -50,7 +50,7 @@
         "prompt_tokens": { "type": "integer" },
         "completion_tokens": { "type": "integer" },
         "total_tokens": { "type": "integer" },
-        "tokens_saved": { 
+        "tokens_saved": {
           "type": "integer",
           "description": "Tokens saved due to cache hits (KV/Semantic)"
         }

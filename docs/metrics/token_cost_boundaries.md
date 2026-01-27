@@ -1,7 +1,7 @@
 # Token & Cost Tracking Boundaries
 
-**Status:** Draft (v0)  
-**Date:** 2025-01-20  
+**Status:** Draft (v0)
+**Date:** 2025-01-20
 **Context:** Distinguishing between "Reasoning Cost" and "Total System Cost" for Graph-BoT benchmarks.
 
 ## 1. Metric Definitions
