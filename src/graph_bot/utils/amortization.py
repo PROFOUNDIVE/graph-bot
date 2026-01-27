@@ -17,7 +17,7 @@ def generate_amortization_curve(
     """Generate EXP1 amortization curve data from stream metrics JSONL.
 
     Input: JSONL from StreamMetricsLogger ("*.stream.jsonl")
-    Output: CSV with columns: t, cum_accuracy, attempt_success_rate_p50, tokens_total_p50, latency_ms_p50, latency_ms_p95, cost_usd_pipeline_avg, cost_usd_total_avg
+    Output: CSV with columns: t, cum_accuracy, attempt_success_rate_p50, attempt_success_rate_avg, tokens_total_p50, tokens_total_avg, latency_ms_p50, latency_ms_p95, cost_usd_pipeline_avg, cost_usd_total_avg
     """
     stream_rows = []
     with stream_metrics_jsonl.open("r", encoding="utf-8") as f:
@@ -43,7 +43,9 @@ def generate_amortization_curve(
         "t",
         "cum_accuracy",
         "attempt_success_rate_p50",
+        "attempt_success_rate_avg",
         "tokens_total_p50",
+        "tokens_total_avg",
         "latency_ms_p50",
         "latency_ms_p95",
         "cost_usd_pipeline_avg",
@@ -75,7 +77,9 @@ def generate_amortization_curve(
         latencies = [p["latency_total_ms"] for p in current_problems]
 
         asr_p50 = statistics.median(success_rates) if success_rates else 0.0
+        asr_avg = statistics.mean(success_rates) if success_rates else 0.0
         tokens_p50 = statistics.median(tokens_totals) if tokens_totals else 0.0
+        tokens_avg = statistics.mean(tokens_totals) if tokens_totals else 0.0
         latency_p50 = statistics.median(latencies) if latencies else 0.0
         latency_p95 = float(np.percentile(latencies, 95)) if latencies else 0.0
 
@@ -94,7 +98,9 @@ def generate_amortization_curve(
                 str(t),
                 str(cum_accuracy),
                 str(asr_p50),
+                str(asr_avg),
                 str(tokens_p50),
+                str(tokens_avg),
                 str(latency_p50),
                 str(latency_p95),
                 str(pipeline_avg),
