@@ -12,7 +12,9 @@ class AppSettings(BaseSettings):
     )
 
     # LLM / embedding provider configs
-    llm_provider: str = Field(default="mock") # Default changed to mock for B3 verification
+    llm_provider: str = Field(
+        default="mock"
+    )  # Default changed to mock for B3 verification
     llm_model: str = Field(default="llama3-8b-instruct")
     llm_base_url: str = Field(default="http://127.0.0.1:2427/v1")
     llm_api_key: str = Field(default="EMPTY")
@@ -28,6 +30,7 @@ class AppSettings(BaseSettings):
     # GraphRAG DB connection (placeholder)
     graphrag_uri: str = Field(default="sqlite:///graphrag.db")
     metagraph_path: Path = Field(default=Path("outputs/metagraph.json"))
+    pricing_path: Path = Field(default=Path("configs/pricing/pricing_v0.yaml"))
 
     # Pipeline hyperparameters
     max_tree_depth: int = Field(default=4)
@@ -56,6 +59,12 @@ class AppSettings(BaseSettings):
     validator_mode: str = Field(
         default="oracle",
         description="Validator mode: oracle, exec_repair, or weak_llm_judge",
+    )
+
+    execution_timeout_sec: float = Field(
+        default=60.0,
+        description="Hard timeout per problem in seconds",
+        validation_alias="EXECUTION_TIMEOUT_SEC",
     )
 
 
