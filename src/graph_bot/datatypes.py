@@ -45,6 +45,7 @@ class StreamProblemMetrics(BaseModel):
     memory_n_nodes: int = 0
     memory_n_edges: int = 0
     contamination_rate: float | None = None
+    poisoned_update_rate: float | None = None
 
 
 class StreamCumulativeMetrics(BaseModel):
@@ -53,6 +54,7 @@ class StreamCumulativeMetrics(BaseModel):
     cumulative_api_cost_usd: float
     cost_per_solved: float
     contamination_rate: float | None = None
+    poisoned_update_rate: float | None = None
 
 
 class SeedData(BaseModel):

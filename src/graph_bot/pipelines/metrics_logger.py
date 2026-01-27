@@ -22,6 +22,8 @@ class StreamMetricsLogger:
         self._cumulative_cost_usd = 0.0
         self._cumulative_contaminated = 0
         self._cumulative_retrieved_templates = 0
+        self._cumulative_updates = 0
+        self._cumulative_poisoned_updates = 0
 
     @property
     def run_id(self) -> str:
@@ -61,11 +63,21 @@ class StreamMetricsLogger:
             contaminated = int(round(float(event.contamination_rate) * retrieved))
             self._cumulative_contaminated += contaminated
 
+        if event.poisoned_update_rate is not None:
+            self._cumulative_updates += 1
+            self._cumulative_poisoned_updates += float(event.poisoned_update_rate)
+
         cost_per_solved = self._cumulative_cost_usd / max(1, self._cumulative_solved)
         contamination_rate = None
         if self._cumulative_retrieved_templates > 0:
             contamination_rate = (
                 self._cumulative_contaminated / self._cumulative_retrieved_templates
+            )
+
+        cumulative_poisoned_rate = None
+        if self._cumulative_updates > 0:
+            cumulative_poisoned_rate = (
+                self._cumulative_poisoned_updates / self._cumulative_updates
             )
 
         cumulative = StreamCumulativeMetrics(
@@ -74,6 +86,7 @@ class StreamMetricsLogger:
             cumulative_api_cost_usd=self._cumulative_cost_usd,
             cost_per_solved=cost_per_solved,
             contamination_rate=contamination_rate,
+            poisoned_update_rate=cumulative_poisoned_rate,
         )
         self._append_jsonl(self._stream_path, cumulative.model_dump())
         return cumulative

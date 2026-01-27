@@ -69,6 +69,7 @@ def run_continual_stream(
     use_edges: bool | None = None,
     policy_id: str | None = None,
     validator_mode: str = "oracle",
+    validator_gated_update: bool = True,
     max_problems: int | None = None,
     metrics_out_dir: Path = Path("outputs/stream_logs"),
     run_id: str = "run",
@@ -103,6 +104,7 @@ def run_continual_stream(
             problem_id = problem.id
             query = problem.to_user_query()
             start_problem = time.perf_counter()
+            poisoned_update_rate: float | None = None
 
             active_mode = mode or settings.mode
             active_policy_id = policy_id or settings.policy_id
@@ -216,12 +218,15 @@ def run_continual_stream(
                         )
                     adapter.update_with_feedback(evaluations)
 
-                    if solved:
+                    should_update = solved or (not validator_gated_update)
+                    if should_update:
                         _insert_solution_template(
                             adapter=adapter,
                             problem_id=problem_id,
                             answer_text=answer_text,
+                            solved=solved,
                         )
+                        poisoned_update_rate = 1.0 if not solved else 0.0
 
                 signal.setitimer(signal.ITIMER_REAL, 0)
 
@@ -255,6 +260,7 @@ def run_continual_stream(
                     memory_n_nodes=len(memory.nodes),
                     memory_n_edges=len(memory.edges),
                     contamination_rate=contamination_rate,
+                    poisoned_update_rate=poisoned_update_rate,
                 )
                 cumulative = metrics.log_problem(problem_metrics)
 
@@ -325,6 +331,7 @@ def run_continual_stream(
                     memory_n_nodes=0,
                     memory_n_edges=0,
                     contamination_rate=None,
+                    poisoned_update_rate=None,
                 )
                 metrics.log_problem(problem_metrics)
                 results.append(
@@ -380,6 +387,7 @@ def run_continual_stream(
                     memory_n_nodes=0,
                     memory_n_edges=0,
                     contamination_rate=None,
+                    poisoned_update_rate=None,
                 )
                 metrics.log_problem(problem_metrics)
                 results.append(
@@ -449,6 +457,7 @@ def _insert_solution_template(
     adapter: GraphRAGAdapter,
     problem_id: str,
     answer_text: str,
+    solved: bool,
 ) -> None:
     from ..datatypes import ReasoningNode, ReasoningTree
 
@@ -460,7 +469,10 @@ def _insert_solution_template(
                 node_id=f"episode-{problem_id}-solution",
                 text=answer_text,
                 type="thought",
-                attributes={"subtype": "template"},
+                attributes={
+                    "subtype": "template",
+                    "quality": {"validator_passed": solved},
+                },
             )
         ],
         edges=[],

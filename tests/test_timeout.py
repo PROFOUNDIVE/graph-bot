@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from graph_bot.pipelines.stream_loop import run_continual_stream
 from graph_bot.settings import settings

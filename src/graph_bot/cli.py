@@ -417,6 +417,11 @@ def stream(
         "--metrics-out-dir",
         help="Directory to write stream JSONL logs",
     ),
+    validator_gated_update: bool = typer.Option(
+        True,
+        "--validator-gated-update/--no-validator-gated-update",
+        help="If True, only insert solved problems into MetaGraph.",
+    ),
 ):
     """Run continual stream loop for Game of 24."""
     run_continual_stream(
@@ -425,6 +430,7 @@ def stream(
         use_edges=use_edges,
         policy_id=policy_id,
         validator_mode=validator_mode or settings.validator_mode,
+        validator_gated_update=validator_gated_update,
         max_problems=max_problems,
         run_id=run_id,
         metrics_out_dir=metrics_out_dir,
