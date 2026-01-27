@@ -17,7 +17,7 @@ def generate_amortization_curve(
     """Generate EXP1 amortization curve data from stream metrics JSONL.
 
     Input: JSONL from StreamMetricsLogger ("*.stream.jsonl")
-    Output: CSV with columns: t, cum_accuracy, attempt_success_rate_p50, attempt_success_rate_avg, tokens_total_p50, tokens_total_avg, latency_ms_p50, latency_ms_p95, cost_usd_pipeline_avg, cost_usd_total_avg
+    Output: CSV with columns: t, cum_accuracy, cost_per_solved, attempt_success_rate_p50, attempt_success_rate_avg, tokens_total_p50, tokens_total_avg, latency_ms_p50, latency_ms_p95, cost_usd_pipeline_avg, cost_usd_total_avg
     """
     stream_rows = []
     with stream_metrics_jsonl.open("r", encoding="utf-8") as f:
@@ -42,6 +42,7 @@ def generate_amortization_curve(
     header = [
         "t",
         "cum_accuracy",
+        "cost_per_solved",
         "attempt_success_rate_p50",
         "attempt_success_rate_avg",
         "tokens_total_p50",
@@ -68,6 +69,7 @@ def generate_amortization_curve(
         t = int(stream_row["t"])
         cum_solved = int(stream_row["cumulative_solved"])
         cum_accuracy = cum_solved / t
+        cps = stream_row.get("cost_per_solved", 0.0)
 
         if t in problems_by_t:
             current_problems.append(problems_by_t[t])
@@ -97,6 +99,7 @@ def generate_amortization_curve(
             [
                 str(t),
                 str(cum_accuracy),
+                str(cps),
                 str(asr_p50),
                 str(asr_avg),
                 str(tokens_p50),

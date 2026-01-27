@@ -19,9 +19,9 @@ def test_generate_amortization_curve_metrics(tmp_path: Path):
     # (Median=10, Mean=(1000+10+10)/3 = 340)
 
     stream_data = [
-        {"t": 1, "cumulative_solved": 1},
-        {"t": 2, "cumulative_solved": 2},
-        {"t": 3, "cumulative_solved": 3},
+        {"t": 1, "cumulative_solved": 1, "cost_per_solved": 0.5},
+        {"t": 2, "cumulative_solved": 2, "cost_per_solved": 0.5},
+        {"t": 3, "cumulative_solved": 3, "cost_per_solved": 0.5},
     ]
 
     problems_data = [
@@ -67,11 +67,14 @@ def test_generate_amortization_curve_metrics(tmp_path: Path):
 
     assert "attempt_success_rate_avg" in header
     assert "tokens_total_avg" in header
+    assert "cost_per_solved" in header
 
     last_row = content[-1].split(",")
 
     asr_avg_idx = header.index("attempt_success_rate_avg")
     tokens_avg_idx = header.index("tokens_total_avg")
+    cost_solved_idx = header.index("cost_per_solved")
 
     assert float(last_row[tokens_avg_idx]) == 340.0
     assert abs(float(last_row[asr_avg_idx]) - 0.6666666666666666) < 1e-6
+    assert float(last_row[cost_solved_idx]) == 0.5
