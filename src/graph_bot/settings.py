@@ -67,5 +67,8 @@ class AppSettings(BaseSettings):
         validation_alias="EXECUTION_TIMEOUT_SEC",
     )
 
+    # Reporting
+    slack_webhook_url: str | None = Field(default=None)
+
 
 settings = AppSettings()
