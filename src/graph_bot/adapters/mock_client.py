@@ -59,12 +59,12 @@ class MockCompletions:
 
         # Simple heuristic to extract numbers and form a valid expression
         numbers_match = re.findall(
-            r"Numbers:\s*(\d+)\s*(\d+)\s*(\d+)\s*(\d+)", user_content
+            r"(?:Numbers:|Input:)\s*(\d+)\s*(\d+)\s*(\d+)\s*(\d+)", user_content
         )
         text = "1 + 1"
 
         if numbers_match:
-            nums = numbers_match[0]
+            nums = numbers_match[-1]
             # Hardcoded logic for test case "4 6 8 2"
             if sorted(nums) == sorted(["4", "6", "8", "2"]):
                 text = "6 * 8 / (4 - 2)"

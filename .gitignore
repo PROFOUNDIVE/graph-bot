@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 .vscode/
 scripts/report_*.sh
+schedule-atlas-start-work.sh
 
 # Agent instructions (local)
 AGENTS.md
