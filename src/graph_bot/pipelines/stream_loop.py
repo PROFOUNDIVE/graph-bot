@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import signal
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from ..datatypes import (
 from ..eval.validators import BaseValidator, get_validator
 from ..pipelines.metrics_logger import StreamMetricsLogger
 from ..utils.pricing import calculate_cost, load_pricing_table
+from ..utils.slack import send_slack_notification
 
 
 class Game24Problem(BaseModel):
@@ -62,6 +64,45 @@ def load_game24_problems(file_path: Path) -> List[Game24Problem]:
     return problems
 
 
+def _distill_query(query: UserQuery) -> UserQuery:
+    """Distill query for retrieval: sort numbers and normalize format.
+
+    Extracts the first 4 numbers (inputs), sorts them, and formats as:
+    'Solve 24 with <n1> <n2> <n3> <n4>'
+    """
+    import re
+
+    # Only apply to Game24
+    if query.metadata and query.metadata.get("task") != "game24":
+        return query
+
+    # Parse numbers (reuse logic from existing code)
+    pattern = re.compile(r"(-?\d+\.?\d*)")
+    all_matches = pattern.findall(query.question)
+
+    if not all_matches:
+        return query
+
+    try:
+        nums = [int(float(x)) for x in all_matches]
+    except ValueError:
+        return query
+
+    # Expect at least 4 numbers (inputs)
+    if len(nums) < 4:
+        return query
+
+    # Take first 4 as inputs and sort them
+    # Note: Game24Problem guarantees inputs come first in the question string.
+    inputs = nums[:4]
+    inputs.sort()
+
+    sorted_str = " ".join(str(x) for x in inputs)
+    new_question = f"Solve 24 with {sorted_str}"
+
+    return query.model_copy(update={"question": new_question})
+
+
 def run_continual_stream(
     *,
     problems_file: Path,
@@ -76,6 +117,8 @@ def run_continual_stream(
 ):
     """Run continual stream loop for Game of 24."""
     from ..settings import settings
+
+    start_run = time.perf_counter()
 
     problems = load_game24_problems(problems_file)
     if max_problems:
@@ -117,6 +160,35 @@ def run_continual_stream(
             try:
                 signal.setitimer(signal.ITIMER_REAL, settings.execution_timeout_sec)
 
+                distilled_query = query
+                if not is_baseline:
+                    start_distill = time.perf_counter()
+                    distilled_query = _distill_query(query)
+                    latency_distill = (time.perf_counter() - start_distill) * 1000.0
+                    metrics.log_token_event(
+                        {
+                            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                            "stream_run_id": metrics.run_id,
+                            "problem_id": problem_id,
+                            "t": t,
+                            "event_type": "cpu_op",
+                            "operation": "distill_query",
+                            "status": "success",
+                            "model": "cpu",
+                            "latency_ms": int(round(latency_distill)),
+                            "run_id": f"{metrics.run_id}:{problem_id}",
+                            "span_id": metrics.new_call_id(),
+                            "component": "pipeline",
+                            "metadata": {},
+                            "usage": {
+                                "prompt_tokens": 0,
+                                "completion_tokens": 0,
+                                "total_tokens": 0,
+                            },
+                            "cost_usd": 0.0,
+                        }
+                    )
+
                 if is_baseline:
                     retrieval = RetrievalResult(
                         query_id=query.id, paths=[], concatenated_context=""
@@ -125,7 +197,9 @@ def run_continual_stream(
                     ret_error_type = "skipped_mode"
                 else:
                     start_ret = time.perf_counter()
-                    retrieval = adapter.retrieve_paths(query, k=settings.top_k_paths)
+                    retrieval = adapter.retrieve_paths(
+                        distilled_query, k=settings.top_k_paths
+                    )
                     latency_ret_ms = (time.perf_counter() - start_ret) * 1000.0
                     ret_error_type = None
 
@@ -156,7 +230,16 @@ def run_continual_stream(
                         "run_id": f"{metrics.run_id}:{problem_id}",
                         "span_id": call_id_retrieve,
                         "component": "rag_infra",
-                        "metadata": {"pricing_version": "v0", "mode": active_mode},
+                        "metadata": {
+                            "pricing_version": "v0",
+                            "mode": active_mode,
+                            "distilled_question": distilled_query.question,
+                            "packed_context_tokens": (
+                                len(re.findall(r"\w+", retrieval.concatenated_context))
+                                if retrieval and retrieval.concatenated_context
+                                else 0
+                            ),
+                        },
                         "usage": {
                             "prompt_tokens": 0,
                             "completion_tokens": 0,
@@ -222,9 +305,13 @@ def run_continual_stream(
                     if should_update:
                         _insert_solution_template(
                             adapter=adapter,
+                            metrics=metrics,
+                            t=t,
                             problem_id=problem_id,
                             answer_text=answer_text,
                             solved=solved,
+                            query=query,
+                            retrieval=retrieval,
                         )
                         poisoned_update_rate = 1.0 if not solved else 0.0
 
@@ -402,8 +489,57 @@ def run_continual_stream(
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
 
+    except Exception as e:
+        elapsed = time.perf_counter() - start_run
+        n_solved = sum(1 for r in results if r.get("solved"))
+        total_cost = 0.0
+        if results:
+            total_cost = results[-1].get("cumulative_cost", 0.0)
+
+        memory_nodes = 0
+        try:
+            if adapter:
+                memory_nodes = len(adapter.export_graph().nodes)
+        except Exception:
+            pass
+
+        payload = {
+            "text": (
+                f"*Graph-Bot Stream Failed*\n"
+                f"• Run ID: `{run_id}`\n"
+                f"• Status: failed\n"
+                f"• Elapsed: {elapsed:.2f}s\n"
+                f"• Solved: {n_solved}\n"
+                f"• Memory Nodes: {memory_nodes}\n"
+                f"• Cost: ${total_cost:.4f}\n"
+                f"• Error: `{str(e)}`"
+            )
+        }
+        send_slack_notification(settings.slack_webhook_url, payload)
+        raise e
+
     finally:
         signal.signal(signal.SIGALRM, old_handler)
+
+    elapsed = time.perf_counter() - start_run
+    n_solved = sum(1 for r in results if r.get("solved"))
+    total_cost = 0.0
+    if results:
+        total_cost = results[-1].get("cumulative_cost", 0.0)
+    memory_nodes = len(adapter.export_graph().nodes)
+
+    payload = {
+        "text": (
+            f"*Graph-Bot Stream Completed*\n"
+            f"• Run ID: `{run_id}`\n"
+            f"• Status: completed\n"
+            f"• Elapsed: {elapsed:.2f}s\n"
+            f"• Solved: {n_solved}\n"
+            f"• Memory Nodes: {memory_nodes}\n"
+            f"• Cost: ${total_cost:.4f}\n"
+        )
+    }
+    send_slack_notification(settings.slack_webhook_url, payload)
 
     return results
 
@@ -455,11 +591,60 @@ def _count_contaminated_templates(graph, paths: list) -> int:
 def _insert_solution_template(
     *,
     adapter: GraphRAGAdapter,
+    metrics: StreamMetricsLogger,
+    t: int,
     problem_id: str,
     answer_text: str,
     solved: bool,
+    query: UserQuery,
+    retrieval: RetrievalResult | None = None,
 ) -> None:
-    from ..datatypes import ReasoningNode, ReasoningTree
+    from ..datatypes import ReasoningEdge, ReasoningNode, ReasoningTree
+
+    # 1. Distill trace into a compact template
+    start_distill = time.perf_counter()
+    distilled_text = _distill_trace(answer_text, query)
+    latency_distill = (time.perf_counter() - start_distill) * 1000.0
+
+    metrics.log_token_event(
+        {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "stream_run_id": metrics.run_id,
+            "problem_id": problem_id,
+            "t": t,
+            "event_type": "cpu_op",
+            "operation": "distill_trace",
+            "status": "success",
+            "model": "cpu",
+            "latency_ms": int(round(latency_distill)),
+            "run_id": f"{metrics.run_id}:{problem_id}",
+            "span_id": metrics.new_call_id(),
+            "component": "pipeline",
+            "metadata": {},
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "cost_usd": 0.0,
+        }
+    )
+
+    # 2. Identify source edges if retrieval was used
+    edges: list[ReasoningEdge] = []
+    if retrieval and retrieval.paths:
+        for path in retrieval.paths:
+            if not path.node_ids:
+                continue
+            # The template used is effectively the last node in the retrieved path
+            source_id = path.node_ids[-1]
+            edges.append(
+                ReasoningEdge(
+                    src=source_id,
+                    dst=f"episode-{problem_id}-solution",
+                    relation="used_for",
+                    attributes={
+                        "weight": 1.0,
+                        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                    },
+                )
+            )
 
     tree = ReasoningTree(
         tree_id=f"episode-{problem_id}",
@@ -467,18 +652,81 @@ def _insert_solution_template(
         nodes=[
             ReasoningNode(
                 node_id=f"episode-{problem_id}-solution",
-                text=answer_text,
+                text=distilled_text,
                 type="thought",
                 attributes={
                     "subtype": "template",
                     "quality": {"validator_passed": solved},
+                    "original_answer": answer_text,
                 },
             )
         ],
-        edges=[],
+        edges=edges,
         provenance={"task": "game24", "source": "stream"},
     )
     adapter.insert_trees([tree])
+
+    metrics.log_token_event(
+        {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "stream_run_id": metrics.run_id,
+            "problem_id": problem_id,
+            "t": t,
+            "event_type": "memory_update",
+            "operation": "insert_trees",
+            "status": "success",
+            "model": "cpu",
+            "latency_ms": 0,
+            "run_id": f"{metrics.run_id}:{problem_id}",
+            "span_id": metrics.new_call_id(),
+            "component": "metagraph",
+            "metadata": {"edges_added_count": len(edges)},
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "cost_usd": 0.0,
+        }
+    )
+
+
+def _distill_trace(answer_text: str, query: UserQuery) -> str:
+    """Distill the solution trace into a compact template (<120 tokens).
+
+    Format:
+    Task: Game24
+    Input: <numbers>
+    Solution: <expression>
+    """
+    import re
+
+    # Extract input numbers from the query string
+    # Expected query format: "Solve 24 with 2 5 8 11" or "2 5 8 11 -> 24"
+    pattern = re.compile(r"(-?\d+\.?\d*)")
+    all_nums = pattern.findall(query.question)
+
+    # Normalize numbers (remove trailing .0)
+    normalized_nums = []
+    for x in all_nums:
+        try:
+            f = float(x)
+            if f.is_integer():
+                normalized_nums.append(str(int(f)))
+            else:
+                normalized_nums.append(x)
+        except ValueError:
+            normalized_nums.append(x)
+
+    # Heuristic: First 4 numbers are inputs in Game24 (as per Game24Problem.to_user_query)
+    inputs = normalized_nums[:4]
+    input_str = " ".join(inputs)
+
+    # answer_text is already the clean expression from _solve_with_retries
+
+    template = f"Task: Game24\n" f"Input: {input_str}\n" f"Solution: {answer_text}"
+
+    # Basic truncation to ensure bounded size (approx check)
+    if len(template) > 500:  # ~120 tokens is roughly 400-500 chars
+        template = template[:500] + "..."
+
+    return template
 
 
 def _normalize_candidate_line(
@@ -594,15 +842,15 @@ def _solve_with_retries(
     got_io_system = """You are playing the 24 Game.
 
 Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
-Parentheses are allowed. Create one valid expression that equals 24.
+Parentheses are allowed. Create one valid Python expression that evaluates to 24.
 
 Output must follow the example format as closely as possible: a single line of the form
-<expression> = 24
+Output: <python_expression>
 Do not include any additional explanation or text."""
 
     got_io_user_template = """<Example>
 Input: 4 9 10 13
-Output: (10 - 4) * (13 - 9) = 24
+Output: (10 - 4) * (13 - 9)
 </Example>
 
 Input: {input}
@@ -611,10 +859,10 @@ Output:"""
     got_cot_system = """You are playing the 24 Game.
 
 Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
-Parentheses are allowed. Find one valid expression that equals 24.
+Parentheses are allowed. Find one valid Python expression that evaluates to 24.
 
-You may show intermediate steps, but you MUST enclose the final expression in <answer> tags:
-<answer>(1 + 2) * 8 = 24</answer>
+You may show intermediate steps, but you MUST enclose the final Python expression in <answer> tags:
+<answer>(1 + 2) * 8</answer>
 Do not include any additional text inside the tags."""
 
     got_cot_user_template = """<Examples>
@@ -623,7 +871,7 @@ Work:
 (10 - 4) = 6
 (13 - 9) = 4
 6 * 4 = 24
-<answer>(10 - 4) * (13 - 9) = 24</answer>
+<answer>(10 - 4) * (13 - 9)</answer>
 
 Input: 1 3 4 6
 Work:
@@ -640,7 +888,7 @@ Work:
 3 * 2 = 6
 6 * 4 = 24 (uses 4 twice) -> backtrack
 (6 / (1 - 3/4)) = 24
-<answer>6 / (1 - 3/4) = 24</answer>
+<answer>6 / (1 - 3/4)</answer>
 </Examples>
 
 Input: {input}
@@ -696,8 +944,8 @@ Input: {input}
                 "\n\nPrevious attempt was invalid.\n"
                 f"Reason: {last_reason}\n"
                 f"Previous output: {prev}\n"
-                "Please fix it. Output ONLY the arithmetic expression in the format:\n"
-                "Output: <expression> = 24"
+                "Please fix it. Output ONLY the valid Python expression in the format:\n"
+                "Output: <expression>"
             )
             current_user += retry_line
 
