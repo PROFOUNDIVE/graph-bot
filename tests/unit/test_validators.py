@@ -1,5 +1,4 @@
 from __future__ import annotations
-import pytest
 from graph_bot.eval.validators import (
     Game24Validator,
     extract_game24_problem_numbers,

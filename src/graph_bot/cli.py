@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 import typer
 
@@ -12,12 +12,6 @@ from .adapters.graphrag import GraphRAGAdapter
 from .pipelines.stream_loop import run_continual_stream
 from .settings import settings
 from .utils.amortization import generate_amortization_curve
-
-from vllm.entrypoints.openai.api_server import run_server  # noqa: E402
-from vllm.entrypoints.openai.cli_args import (  # noqa: E402
-    make_arg_parser as _vllm_make_arg_parser,
-    validate_parsed_serve_args,
-)
 import argparse
 from multiprocessing import Process
 import socket
@@ -25,7 +19,6 @@ import signal
 import os
 import sys
 import time
-import uvloop  # noqa: E402
 
 
 app = typer.Typer(help="Graph-augmented Buffer of Thoughts")
@@ -73,12 +66,21 @@ def _make_vllm_parser():
     - 일부 버전: make_arg_parser()  (인자 없이)
     - 일부 버전: make_arg_parser(parser) (커스텀 파서 필요, deprecated 키워드 사용)
     """
+    # NOTE: vllm import is intentionally lazy to avoid importing vllm (and its
+    # transitive deps like sentencepiece) during normal CLI import/test
+    # collection.
+    from vllm.entrypoints.openai.cli_args import (
+        make_arg_parser as _vllm_make_arg_parser,
+    )
+
+    make_arg_parser = cast(Any, _vllm_make_arg_parser)
+
     try:
         # 인자 없이 동작하는 버전
-        return _vllm_make_arg_parser()
+        return make_arg_parser()
     except TypeError:
         # 커스텀 파서를 기대하는 버전: deprecated 키워드를 무시하는 파서 전달
-        return _vllm_make_arg_parser(_CompatArgumentParser(prog="vllm-api-server"))
+        return make_arg_parser(_CompatArgumentParser(prog="vllm-api-server"))
 
 
 def _port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -113,6 +115,10 @@ def _serve_entrypoint(
     - 표준 출력/에러를 로그 파일로 리다이렉트
     - uvloop.run(run_server(args)) 호출
     """
+    # Lazy imports keep `import graph_bot.cli` lightweight.
+    import uvloop
+    from vllm.entrypoints.openai.api_server import run_server
+
     if cuda_visible_devices is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_visible_devices)
 
@@ -242,14 +248,19 @@ def llm_server(
             str(gpu_memory_utilization),
         ]
         args = parser.parse_args(cli_argv)
-        validate_parsed_serve_args(args)
-        logger.debug(f"args: {args}")
+
+        # Lazy import (vLLM) only when actually starting server.
+        from vllm.entrypoints.openai.cli_args import validate_parsed_serve_args
+
+        args_namespace = cast(argparse.Namespace, args)
+        validate_parsed_serve_args(cast(Any, args_namespace))
+        logger.debug(f"args: {args_namespace}")
 
         # 서버 프로세스 생성 (모듈 직접 호출)
         proc = Process(
             target=_serve_entrypoint,
             kwargs=dict(
-                args_namespace=args,
+                args_namespace=args_namespace,
                 cuda_visible_devices=str(gpu_id),
                 log_file=log_file,
             ),
