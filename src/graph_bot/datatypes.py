@@ -58,7 +58,7 @@ class StreamCumulativeMetrics(BaseModel):
 
 
 class SeedData(BaseModel):
-    """Minimal unit to start HiAR-ICL tree generation."""
+    """Minimal unit to start reasoning tree generation."""
 
     id: str
     content: str

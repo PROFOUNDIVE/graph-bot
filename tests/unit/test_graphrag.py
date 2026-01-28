@@ -12,6 +12,7 @@ from graph_bot.datatypes import (
     ReasoningEdge,
     ReasoningNode,
     ReasoningTree,
+    UserQuery,
 )
 
 
@@ -204,6 +205,25 @@ def test_persistence(tmp_path):
         assert metagraph_path.exists()
 
         adapter2 = GraphRAGAdapter()
-        graph = adapter2.export_graph()
-        assert len(graph.nodes) == 1
-        assert graph.nodes[0].text == "Persistent"
+    graph = adapter2.export_graph()
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].text == "Persistent"
+
+
+def test_retrieve_paths(adapter):
+    node1 = ReasoningNode(node_id="n1", text="Target Query", type="thought")
+    tree = ReasoningTree(
+        tree_id="t1",
+        root_id="n1",
+        nodes=[node1],
+        edges=[],
+        provenance={"task": "test-task"},
+    )
+    adapter.insert_trees([tree])
+
+    query = UserQuery(id="q1", question="target query")
+    result = adapter.retrieve_paths(query, k=1)
+
+    assert result.query_id == "q1"
+    assert len(result.paths) == 1
+    assert "target query" in result.concatenated_context.lower()

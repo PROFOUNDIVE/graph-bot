@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from ..settings import settings
+from ..logsetting import logger
 from ..datatypes import (
     MetaGraph,
     PathEvaluation,
@@ -417,10 +418,13 @@ class GraphRAGAdapter:
 
         if self.mode == "flat_template_rag":
             candidate_paths = [[node_id] for node_id in seed_nodes]
+            edge_index = {}
         elif self.use_edges:
             adjacency: Dict[str, List[str]] = {}
+            edge_index: Dict[Tuple[str, str], ReasoningEdge] = {}
             for edge in self._graph.edges:
                 adjacency.setdefault(edge.src, []).append(edge.dst)
+                edge_index[(edge.src, edge.dst)] = edge
 
             candidate_paths = self._build_candidate_paths(
                 seed_nodes, adjacency, node_scores
@@ -429,11 +433,12 @@ class GraphRAGAdapter:
             candidate_paths = [
                 [node_id] for node_id in seed_nodes[: settings.rerank_top_n]
             ]
+            edge_index = {}
 
         scored_paths = []
         for path in candidate_paths:
             semantic_score, combined_score = self._score_path(
-                path, node_scores, node_index
+                path, node_scores, node_index, edge_index=edge_index
             )
             if self.policy_id == "semantic_only":
                 combined_score = semantic_score
@@ -450,13 +455,49 @@ class GraphRAGAdapter:
 
         paths: List[RetrievalPath] = []
         context_chunks: List[str] = []
+
+        packed_paths_count = 0
+        packed_nodes_count = 0
+        current_tokens = 0
+        MAX_NODES_PER_PATH = 2
+        MAX_CONTEXT_TOKENS = 3072
+
         for path, _, score in selected:
-            path_id = "/".join(path)
-            paths.append(RetrievalPath(path_id=path_id, node_ids=path, score=score))
+            valid_node_ids = []
+            path_nodes_packed = 0
+
             for node_id in path:
+                if path_nodes_packed >= MAX_NODES_PER_PATH:
+                    break
+
                 node = node_index.get(node_id)
-                if node:
-                    context_chunks.append(node.text)
+                if not node:
+                    continue
+
+                text = node.text
+                tokens = len(_tokenize(text))
+
+                if current_tokens + tokens <= MAX_CONTEXT_TOKENS:
+                    context_chunks.append(text)
+                    valid_node_ids.append(node_id)
+                    current_tokens += tokens
+                    packed_nodes_count += 1
+                    path_nodes_packed += 1
+                else:
+                    logger.debug(
+                        f"Skipping node {node_id} (tokens={tokens}) due to budget."
+                    )
+
+            if valid_node_ids:
+                path_id = "/".join(valid_node_ids)
+                paths.append(
+                    RetrievalPath(path_id=path_id, node_ids=valid_node_ids, score=score)
+                )
+                packed_paths_count += 1
+
+        logger.info(
+            f"Packed {packed_paths_count} paths and {packed_nodes_count} nodes (total tokens: {current_tokens})."
+        )
 
         return RetrievalResult(
             query_id=query.id,
@@ -505,6 +546,8 @@ class GraphRAGAdapter:
         node_ids: List[str],
         node_scores: Dict[str, float],
         node_index: Dict[str, ReasoningNode],
+        *,
+        edge_index: Dict[Tuple[str, str], ReasoningEdge] | None = None,
     ) -> Tuple[float, float]:
         if not node_ids:
             return 0.0, 0.0
@@ -512,6 +555,8 @@ class GraphRAGAdapter:
         semantic_values = [node_scores.get(node_id, 0.0) for node_id in node_ids]
         stats_values = []
         cost_values = []
+        edge_stats_values = []
+
         for node_id in node_ids:
             node = node_index.get(node_id)
             if not node:
@@ -528,11 +573,31 @@ class GraphRAGAdapter:
             stats_values.append(float(stats.get("ema_success", 0.0)))
             cost_values.append(float(stats.get("avg_cost_usd", 0.0)))
 
+        # Edge stats
+        if edge_index and len(node_ids) > 1:
+            for src, dst in zip(node_ids, node_ids[1:]):
+                edge = edge_index.get((src, dst))
+                if edge:
+                    e_stats = (edge.attributes or {}).get("stats", {})
+                    edge_stats_values.append(float(e_stats.get("ema_success", 0.0)))
+
         avg_semantic = sum(semantic_values) / len(semantic_values)
         avg_stats = sum(stats_values) / len(stats_values) if stats_values else 0.0
         avg_cost = sum(cost_values) / len(cost_values) if cost_values else 0.0
+        avg_edge_stats = (
+            sum(edge_stats_values) / len(edge_stats_values)
+            if edge_stats_values
+            else 0.0
+        )
+
         length_penalty = 0.02 * max(len(node_ids) - 1, 0)
-        combined = avg_semantic + avg_stats - length_penalty - (avg_cost * 0.01)
+        combined = (
+            avg_semantic
+            + avg_stats
+            + avg_edge_stats
+            - length_penalty
+            - (avg_cost * 0.01)
+        )
         return avg_semantic, combined
 
     def prune_graph(self) -> int:
