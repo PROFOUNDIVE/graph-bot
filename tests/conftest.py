@@ -13,10 +13,26 @@ from graph_bot.settings import settings
 
 @pytest.fixture
 def mock_settings(tmp_path):
-    with patch.object(
-        settings, "metagraph_path", tmp_path / "metagraph.json"
-    ), patch.object(settings, "pricing_path", tmp_path / "pricing.yaml"):
-        (tmp_path / "metagraph.json").parent.mkdir(parents=True, exist_ok=True)
+    metagraph_path = tmp_path / "metagraph.json"
+    pricing_path = tmp_path / "pricing.yaml"
+    pricing_path.write_text(
+        """
+pricing_version: "v0"
+models:
+  llama3-8b-instruct:
+    input_usd_per_1k: 0.0
+    output_usd_per_1k: 0.0
+  mock:
+    input_usd_per_1k: 0.0
+    output_usd_per_1k: 0.0
+""".lstrip(),
+        encoding="utf-8",
+    )
+    with (
+        patch.object(settings, "metagraph_path", metagraph_path),
+        patch.object(settings, "pricing_path", pricing_path),
+    ):
+        metagraph_path.parent.mkdir(parents=True, exist_ok=True)
         yield settings
 
 

@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import json
 import math
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from graph_bot.adapters.graphrag import GraphRAGAdapter
 from graph_bot.datatypes import (
-    MetaGraph,
     PathEvaluation,
     ReasoningEdge,
     ReasoningNode,
     ReasoningTree,
 )
-from graph_bot.settings import settings
 
 
 @pytest.fixture
@@ -121,8 +118,6 @@ def test_time_decay(adapter):
     adapter.insert_trees([tree])
 
     graph = adapter.export_graph()
-    meta_node_id = graph.nodes[0].node_id
-
     graph.nodes[0].attributes["stats"]["ema_success"] = 1.0
     now = datetime.now(timezone.utc)
     graph.nodes[0].attributes["last_used_at"] = now.isoformat()

@@ -1,79 +1,61 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
 
-import pytest
-
-from graph_bot.datatypes import RetrievalPath, RetrievalResult, SeedData, UserQuery
-from graph_bot.pipelines.build_trees import build_reasoning_trees_from_seeds
-from graph_bot.pipelines.retrieve import retrieve_k_optimal_paths
+from graph_bot.pipelines.stream_loop import load_game24_problems, run_continual_stream
+from graph_bot.settings import settings
 
 
-def test_build_reasoning_trees_from_seeds(mock_settings):
-    seeds = [
-        SeedData(id="seed1", content="2 4 6 -> 12", metadata={"task": "game24"}),
+def test_load_game24_problems(tmp_path):
+    problems_file = tmp_path / "problems.jsonl"
+    problems = [
+        {"id": "q1", "numbers": [2, 5, 8, 11]},
+        {"id": "q2", "numbers": [1, 3, 4, 6], "target": 24},
     ]
-
-    mock_settings.max_tree_depth = 1
-    mock_settings.beam_width = 1
-
-    with patch("graph_bot.pipelines.build_trees.HiARICLAdapter") as MockAdapter:
-        mock_instance = MockAdapter.return_value
-        mock_instance.generate.return_value = ["mock_tree"]
-
-        trees = build_reasoning_trees_from_seeds(seeds)
-
-        MockAdapter.assert_called_once()
-        mock_instance.generate.assert_called_once_with(seeds)
-        assert trees == ["mock_tree"]
-
-
-def test_build_reasoning_trees_integration(mock_settings):
-    seeds = [
-        SeedData(id="seed1", content="2 4 6 -> 12", metadata={"task": "game24"}),
-    ]
-
-    mock_settings.max_tree_depth = 1
-    mock_settings.beam_width = 1
-
-    trees = build_reasoning_trees_from_seeds(seeds)
-
-    assert len(trees) == 1
-    tree = trees[0]
-    assert isinstance(tree.provenance, dict)
-    assert tree.provenance.get("seed_id") == "seed1"
-    assert tree.provenance.get("adapter") == "HiARICLAdapter"
-    assert len(tree.nodes) > 0
-
-
-def test_retrieve_k_optimal_paths_calls_adapter(mock_settings):
-    query = UserQuery(id="q1", question="test query")
-
-    mock_adapter = MagicMock()
-    mock_result = RetrievalResult(
-        query_id="q1",
-        paths=[RetrievalPath(path_id="p1", node_ids=["n1"], score=1.0)],
-        concatenated_context="context",
+    problems_file.write_text(
+        "\n".join(json.dumps(problem) for problem in problems) + "\n",
+        encoding="utf-8",
     )
-    mock_adapter.retrieve_paths.return_value = mock_result
 
-    result = retrieve_k_optimal_paths(query, adapter=mock_adapter, k=5)
+    loaded = load_game24_problems(problems_file)
 
-    mock_adapter.retrieve_paths.assert_called_once_with(query=query, k=5)
-    assert result == mock_result
-    assert isinstance(result, RetrievalResult)
+    assert len(loaded) == 2
+    assert loaded[0].id == "q1"
+    assert loaded[0].target == 24.0
+
+    query = loaded[0].to_user_query()
+    assert query.id == "q1"
+    assert query.metadata is not None
+    assert query.metadata["task"] == "game24"
 
 
-def test_retrieve_k_optimal_paths_default_adapter(mock_settings):
-    query = UserQuery(id="q1", question="test query")
+def test_run_continual_stream_writes_metrics(tmp_path, monkeypatch):
+    problems_file = tmp_path / "problems.jsonl"
+    problems_file.write_text(
+        json.dumps({"id": "q1", "numbers": [2, 4, 6, 8], "target": 24}) + "\n",
+        encoding="utf-8",
+    )
 
-    with patch("graph_bot.pipelines.retrieve.GraphRAGAdapter") as MockAdapter:
-        mock_instance = MockAdapter.return_value
-        mock_instance.retrieve_paths.return_value = RetrievalResult(
-            query_id="q1", paths=[], concatenated_context=""
-        )
+    metrics_dir = tmp_path / "metrics"
 
-        retrieve_k_optimal_paths(query, k=3)
+    monkeypatch.setattr(settings, "metagraph_path", tmp_path / "metagraph.json")
+    monkeypatch.setattr(settings, "llm_provider", "mock")
+    monkeypatch.setattr(settings, "llm_model", "mock")
+    monkeypatch.setattr(settings, "retry_max_attempts", 1)
 
-        MockAdapter.assert_called_once()
-        mock_instance.retrieve_paths.assert_called_once()
+    results = run_continual_stream(
+        problems_file=problems_file,
+        mode="io",
+        max_problems=1,
+        metrics_out_dir=metrics_dir,
+        run_id="test",
+    )
+
+    assert len(results) == 1
+    assert results[0]["problem_id"] == "q1"
+    assert results[0]["solved"] is False
+
+    assert (metrics_dir / "test.calls.jsonl").exists()
+    assert (metrics_dir / "test.problems.jsonl").exists()
+    assert (metrics_dir / "test.stream.jsonl").exists()
+    assert (metrics_dir / "test.token_events.jsonl").exists()
