@@ -6,9 +6,9 @@ This repository implements a **Graph-augmented Buffer of Thoughts**. The goal
 is to compare episodic reasoning (ToT/GoT) with a persistent MetaGraph-based
 memory for reuse and better long-horizon performance.
 
-Many parts are still **placeholders (stubs)**, but v0.1 includes a minimal,
-persistent MetaGraph implementation (on-disk JSON) so the end-to-end loop can be
-run and iterated on.
+Many parts are still **placeholders (stubs)**, but the system supports a
+continual stream of problems, accumulating successful reasoning paths into a
+persistent MetaGraph.
 
 ## Quickstart
 
@@ -26,27 +26,7 @@ python -m pip install "pre-commit==3.7.1" "black==24.3.0" "ruff==0.5.5"
 pre-commit run --all-files
 ```
 
-## CLI Pipeline (v0.1)
-
-1. **Tree generation**: `graph-bot seeds-build`
-2. **Insert into MetaGraph**: `graph-bot trees-insert`
-3. **Postprocess (prune/decay)**: `graph-bot postprocess`
-4. **Retrieve & answer**: `graph-bot retrieve`
-5. **Loop once**: `graph-bot loop-once`
-
-Example:
-
-```bash
-graph-bot seeds-build data/seeds.jsonl --out outputs/trees.json
-graph-bot trees-insert outputs/trees.json
-graph-bot postprocess --t 10
-graph-bot retrieve "2 5 8 11 → 24" --k 3 --show-paths --task game24
-```
-
-MetaGraph state is persisted to `outputs/metagraph.json` by default and can be
-overridden with `GRAPH_BOT_METAGRAPH_PATH`.
-
-## Continual Stream (v0.2 / B-main)
+## Continual Stream Pipeline
 
 Run a continual Game-of-24 stream that accumulates templates into the MetaGraph
 and emits JSONL metrics (per-call, per-problem, cumulative stream metrics).
@@ -157,39 +137,33 @@ Notable settings:
 
 ### Adapters (`adapters/`)
 
-- `hiaricl_adapter.py`: stub generator producing `ReasoningTree` from `SeedData`
-- `graphrag.py`: v0.1 persistent MetaGraph store + retrieval (semantic + stats)
+- `graphrag.py`: Persistent MetaGraph store + retrieval (semantic + stats)
 - `vllm_openai_client.py`: OpenAI-compatible client for vLLM
 - `mock_client.py`: Mock client for testing
 
 ### Pipelines (`pipelines/`)
 
-- `build_trees.py`: seeds → reasoning trees
-- `retrieve.py`: query → retrieval result
-- `main_loop.py`: glue layer (insert, retrieve+usage, postprocess pruning)
 - `stream_loop.py`: continual learning stream (Game of 24)
 - `metrics_logger.py`: structured JSONL logging for experiments
-- `postprocess.py`: offline graph maintenance (pruning/verbalization)
 
 ### Evaluation (`eval/`)
 
 - `validators.py`: problem-specific validators (e.g., `Game24Validator`)
 
-## Design Spec v0.1 (Summary)
+## Design Spec (Summary)
 
 ### Pipeline
 
-1. Tree generation (`HiAR-ICL` or baseline solver)
+1. Tree generation (Stream/GoT solver)
 2. Insert into MetaGraph
-3. Postprocess every T inputs (rerank/verbalize/prune/augment)
-4. Retrieve `k` optimal paths and instantiate prompt
-5. Update node/edge stats with validator/scorer feedback
+3. Retrieve `k` optimal paths and instantiate prompt
+4. Update node/edge stats with validator/scorer feedback
 
 ### Memory Schema
 
 - `ReasoningNode.type`: `thought | action | evidence | answer`
 - **Template nodes**: stored as `type="thought"` and `attributes.subtype="template"`
-- Required attributes (v0.1)
+- Required attributes
   - `task`, `created_at`, `last_used_at`
   - `stats`: `n_seen`, `n_used`, `n_success`, `n_fail`, `ema_success`,
     `avg_tokens`, `avg_latency_ms`, `avg_cost_usd`

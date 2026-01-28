@@ -1,5 +1,4 @@
 libs:
-  hiaricl_root: "libs/HiARICL"
   bot_root: "libs/buffer-of-thought-llm"
 data:
   raw: "data/raw"

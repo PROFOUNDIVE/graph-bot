@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import typer
 
 from .logsetting import logger
-from .datatypes import SeedData, ReasoningTree, UserQuery
-from .pipelines.build_trees import build_reasoning_trees_from_seeds
+from .datatypes import ReasoningTree
 from .adapters.graphrag import GraphRAGAdapter
-from .pipelines.main_loop import answer_with_retrieval, postprocess_after_T_inputs
 from .pipelines.stream_loop import run_continual_stream
 from .settings import settings
 from .utils.amortization import generate_amortization_curve
@@ -30,7 +28,7 @@ import time
 import uvloop  # noqa: E402
 
 
-app = typer.Typer(help="Graph-augmented Buffer of Thoughts (stubs)")
+app = typer.Typer(help="Graph-augmented Buffer of Thoughts")
 
 
 class _CompatArgumentParser(argparse.ArgumentParser):
@@ -330,38 +328,6 @@ def llm_server(
         typer.secho("✅ vLLM server stopped.", fg="green")
 
 
-@app.command("seeds-build")
-def seeds_build(
-    seeds_file: Path = typer.Argument(
-        ..., help="JSONL file of seeds: {id, content, metadata?}"
-    ),
-    out_file: Optional[Path] = typer.Option(
-        None, "--out", help="Write resulting trees to JSON file"
-    ),
-):
-    """Implement HiAR-ICL to get reasoning trees.
-
-    Input: Seed data (JSONL)
-    Output: Reasoning tree (printed or saved JSON)
-    """
-    seeds: List[SeedData] = []
-    with seeds_file.open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            obj = json.loads(line)
-            seeds.append(SeedData.model_validate(obj))
-
-    trees = build_reasoning_trees_from_seeds(seeds)
-    trees_json = [t.model_dump() for t in trees]
-
-    if out_file:
-        _dump_json_file(out_file, trees_json)
-        typer.echo(f"Wrote {len(trees)} trees to {out_file}")
-    else:
-        typer.echo(json.dumps(trees_json, ensure_ascii=False, indent=2))
-
-
 @app.command("trees-insert")
 def trees_insert(
     trees_file: Path = typer.Argument(..., help="JSON file: list[ReasoningTree]"),
@@ -376,15 +342,6 @@ def trees_insert(
     _adapter = GraphRAGAdapter()
     count = _adapter.insert_trees(trees)
     typer.echo(f"Inserted {count} trees")
-
-
-@app.command("postprocess")
-def postprocess(
-    t_inputs: int = typer.Option(0, "--t", help="After T inputs, run postprocessing"),
-):
-    """After T inputs, do reranking/verbalization/pruning/augmentation."""
-    pruned = postprocess_after_T_inputs(t_inputs)
-    typer.echo(f"Postprocess pruned {pruned} nodes after T={t_inputs} inputs")
 
 
 @app.command("stream")
@@ -471,65 +428,3 @@ def amortize(
         token_events_jsonl=events_path,
     )
     typer.echo(f"Wrote amortization curve CSV to {out_csv}")
-
-
-@app.command("retrieve")
-def retrieve(
-    query: str = typer.Argument(..., help="User query"),
-    k: Optional[int] = typer.Option(None, "--k", help="Override top-k paths"),
-    show_paths: bool = typer.Option(
-        False, "--show-paths", help="Print retrieved paths"
-    ),
-    task: Optional[str] = typer.Option(
-        None, "--task", help="Task label for retrieval metadata"
-    ),
-    mode: Optional[str] = typer.Option(
-        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
-    ),
-    use_edges: Optional[bool] = typer.Option(
-        None, "--use-edges", help="Use graph edges for path construction"
-    ),
-    policy_id: Optional[str] = typer.Option(
-        None,
-        "--policy-id",
-        help="Selection policy: semantic_only or semantic_topK_stats_rerank",
-    ),
-):
-    """Retrieve & Instantiate per input w/ k optimal paths and answer via LLM."""
-    metadata = {"task": task} if task else None
-    q = UserQuery(id="q-1", question=query, metadata=metadata)
-    adapter = GraphRAGAdapter(
-        mode=mode or settings.mode,
-        use_edges=use_edges if use_edges is not None else settings.use_edges,
-        policy_id=policy_id or settings.policy_id,
-    )
-    result = adapter.retrieve_paths(q, k=k or settings.top_k_paths)
-    if show_paths:
-        typer.echo(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
-    answer = answer_with_retrieval(q, retrieval=result, adapter=adapter)
-    typer.echo(answer.answer)
-
-
-@app.command("loop-once")
-def loop_once(
-    query: str = typer.Argument(
-        ..., help="User query to answer and then generate new trees for"
-    ),
-    task: Optional[str] = typer.Option(
-        None, "--task", help="Task label for query/seed metadata"
-    ),
-):
-    """Return to 1: Input user query & k optimal paths -> Output reasoning trees."""
-    metadata = {"task": task} if task else None
-    # 1) Retrieve & answer
-    q = UserQuery(id="q-1", question=query, metadata=metadata)
-    adapter = GraphRAGAdapter()
-    retrieval = adapter.retrieve_paths(q, k=settings.top_k_paths)
-    ans = answer_with_retrieval(q, retrieval=retrieval, adapter=adapter)
-    typer.echo(ans.answer)
-
-    # 2) Use the query as a seed to generate new trees and insert
-    seed = SeedData(id="seed-from-query", content=query, metadata=metadata)
-    trees = build_reasoning_trees_from_seeds([seed])
-    inserted = adapter.insert_trees(trees)
-    typer.echo(f"Generated and inserted {inserted} new trees from query")
