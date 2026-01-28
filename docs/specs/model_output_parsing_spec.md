@@ -1,11 +1,8 @@
-# Model Output Parsing Spec (Reasoning-Friendly)
+# Model Output Parsing Spec (v0.3 Programming-Based)
 
-**Status:** Verified (v0.2)
+**Status:** Verified (v0.3)
 
-This document defines a reasoning-friendly contract between:
-- model raw outputs (which may include multi-line reasoning),
-- parsing/extraction logic (which produces a task-specific candidate answer),
-- and validators (which consume only the extracted candidate).
+This document defines the contract for v0.3 "programming-based" output parsing, which supports complex reasoning traces while extracting clean, machine-readable expressions for memory distillation and validation.
 
 Motivation: for some tasks (e.g., Game of 24), the current implementation
 effectively forces a single-line output by (a) prompt instructions and (b)
@@ -29,18 +26,17 @@ Out of scope:
 - Changing validator semantics (e.g., what counts as a correct solution).
 - Enforcing or discouraging chain-of-thought (CoT) at generation time.
 
-## 2) Current Behavior (as of v0.2 stream)
+## 2) v0.3 Behavior: Programming-Based Extraction
 
-Current Game24 stream behavior (implementation detail):
-- Prompts instruct the model to output a single-line arithmetic expression.
-- `_normalize_candidate_line()` selects the first non-empty line from
-  `raw_output`.
-- Precheck/validator run against that single selected line.
+As of v0.3, the system explicitly encourages multi-line reasoning (Chain-of-Thought) but requires a final "clean" expression for both validation and MetaGraph distillation.
 
-Practical implication: any multi-line reasoning causes the candidate to be the
-first line of reasoning, not the final expression, increasing `format_error`.
+Implementation detail (`stream_loop.py`):
+- Prompts instruct the model to use `<answer>` tags for the final expression.
+- `_normalize_candidate_line()` implements a multi-priority extraction strategy.
+- `_distill_trace()` converts successful traces into a compact, normalized template format.
 
 ## 3) Contract: Raw Output -> Candidate -> Validator
+
 
 Definitions:
 - `raw_output`: verbatim text returned by the model.
@@ -60,7 +56,7 @@ Contract rules:
 Two formats are supported, prioritizing explicit markers:
 
 ### Format A: Answer Block (Primary/Recommended)
-An XML-like block. This is the most robust and preferred method as it clearly delimits the answer from any preceding reasoning or chain-of-thought.
+An XML-like block. This is the most robust and preferred method. In v0.3, the system expects a **pure python expression** inside the tags (e.g., no `= 24` suffix).
 
 ```text
 <answer>
@@ -69,47 +65,44 @@ An XML-like block. This is the most robust and preferred method as it clearly de
 ```
 
 ### Format B: GoT/CoT Style (Legacy/Alternative)
-The standard GoT/CoT prompt instructs the model to output the final line starting with `Output:`. Supported for backward compatibility with existing templates.
+Supported for backward compatibility. The parser looks for the **last** line starting with `Output:`.
 
 ```text
-Output: <expression> = 24
+Output: (10 - 4) * (13 - 9)
 ```
 
-or simply:
+**Extraction Priority (v0.3):**
+1. **Answer Block (`<answer>`)**: Extracts the first non-empty line within the tags. Strips any `=` suffix.
+2. **GoT Style (`Output:`)**: Finds the *last* line starting with `Output:`. Strips prefix and any `=` suffix.
+3. **Fallback (Bottom-Scan)**: Scans lines from bottom to top. The first line that passes the `_precheck_candidate` (see Section 6) is selected.
 
+## 5) Distillation: Normalized Templates
+
+v0.3 introduces **Distillation** to ensure the MetaGraph contains clean, reusable templates regardless of the original model's verbosity.
+
+### Query Distillation (`_distill_query`)
+Before retrieval, the user question is normalized:
+- Input numbers are extracted and sorted.
+- Format: `Solve 24 with <n1> <n2> <n3> <n4>`
+- This ensures that `2 5 8 11` and `11 8 5 2` hit the same memory entries.
+
+### Trace Distillation (`_distill_trace`)
+After a successful validation, the trace is compressed into a 3-line template:
 ```text
-Output: <expression>
+Task: Game24
+Input: 2 5 8 11
+Solution: (8-5)*(11-2)
 ```
-
-**Extraction Priority:**
-1. **Answer Block (`<answer>`)**: Look for content within `<answer>...</answer>` tags. This is the most explicit and preferred marker.
-2. **GoT Style (`Output:`)**: If no block is found, look for the *last* line starting with `Output:`. Extract the expression, stripping any `= 24` suffix.
-3. **Fallback (Bottom-Scan)**: If neither found, scan from bottom to top for the first valid expression line.
-
-## 5) Fallback Extraction (No Markers Present)
-
-If no markers are present, the parser SHOULD attempt a fallback extraction. For `task=game24`:
-
-1. Split `raw_output` into trimmed lines and scan from bottom to top.
-2. For each line, check whether it is a plausible Game24 expression (see Section 6). The first plausible line becomes `candidate`.
-   - Note: Strip `Output:` prefix or `= 24` suffix if they appear during the scan but weren't caught by strict marker logic.
-3. If none match, return empty candidate.
-
-This fallback is designed to allow models that produce reasoning followed by a final expression line without explicit markers.
+This distilled text is what gets stored in the `ReasoningNode.text` field for future few-shot retrieval.
 
 ## 6) Task-Specific Parsing Rules: Game24
 
-Game24 expects an arithmetic expression that:
-- Uses only digits, whitespace, parentheses, and `+ - * /`.
-- Uses each provided number exactly once (as standalone number tokens; no
-  digit concatenation).
 
-Suggested checks (aligned with current implementation):
-- Reject lines containing `=` or an explicit target marker like `-> 24` (some
-  datasets use an arrow marker such as U+2192) to avoid "answer = 24" formats.
-- Reject lines containing characters outside `[0-9\s\(\)\+\-\*/]`.
-- Use the AST-based literal extractor (`extract_game24_expression_number_literals`) to
-  validate number tokens.
+Game24 expects a pure arithmetic expression. In v0.3, the following strict rules apply to the extracted `candidate`:
+
+- **Strict No-Target Policy:** The candidate MUST NOT contain `=` or `->` or `→`. If these markers were present in the `raw_output`, the parser must strip them before passing to the validator.
+- **Token Filtering:** Reject lines containing characters outside `[0-9\s\(\)\+\-\*/]`.
+- **Literal Verification:** Use `extract_game24_expression_number_literals` to ensure only the allowed numbers are used.
 
 Note: evaluation to 24 remains the validator's responsibility.
 
@@ -130,7 +123,7 @@ This preserves debuggability without constraining model reasoning.
 - `stream_loop.py` implements this by first checking for `<answer>` tags, then `Output:`, then falling back to a bottom-up line scan.
 
 **Prompt Recommendation:**
-Prompts SHOULD explicitly instruct the model to wrap the final result in `<answer>` tags. This minimizes extraction errors and allows the model to output reasoning before the final answer.
+Prompts SHOULD explicitly instruct the model to wrap the final result in `<answer>` tags. This minimizes extraction errors and allows the model to output reasoning before the final answer. In v0.3, we specifically ask for a **Python expression** that evaluates to 24.
 
 Example prompt instruction:
-> "You may show intermediate steps, but you MUST enclose the final expression in `<answer>` tags: `<answer>(1 + 2) * 8 = 24</answer>`"
+> "You may show intermediate steps, but you MUST enclose the final Python expression in `<answer>` tags: `<answer>(1 + 2) * 8</answer>`"

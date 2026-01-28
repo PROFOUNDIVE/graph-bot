@@ -31,12 +31,16 @@
     },
     "event_type": {
       "type": "string",
-      "enum": ["llm_completion", "embedding", "rag_retrieval", "tool_call"],
+      "enum": ["llm_completion", "embedding", "rag_retrieval", "tool_call", "cpu_op", "memory_update"],
       "description": "Type of operation performed"
+    },
+    "operation": {
+      "type": "string",
+      "description": "Specific operation name (e.g., 'distill_query', 'retrieve', 'solve')"
     },
     "component": {
       "type": "string",
-      "enum": ["pipeline", "auxiliary", "rag_infra", "evaluator"],
+      "enum": ["pipeline", "auxiliary", "rag_infra", "evaluator", "metagraph"],
       "description": "Classification for Cost Track A/B aggregation"
     },
     "model": {
