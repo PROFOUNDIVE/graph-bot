@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -58,10 +58,13 @@ def test_run_stream_sends_slack_failure(tmp_path, monkeypatch):
     # But if called in inner except, it bubbles up.
     # Actually, log_problem is called at the end of the try block. If it raises there, it goes to inner except.
     # Then inner except calls log_problem AGAIN. If that raises, it bubbles up.
-    with patch(
-        "graph_bot.pipelines.metrics_logger.StreamMetricsLogger.log_problem",
-        side_effect=ValueError("Fatal Error"),
-    ), patch("graph_bot.pipelines.stream_loop.send_slack_notification") as mock_send:
+    with (
+        patch(
+            "graph_bot.pipelines.metrics_logger.StreamMetricsLogger.log_problem",
+            side_effect=ValueError("Fatal Error"),
+        ),
+        patch("graph_bot.pipelines.stream_loop.send_slack_notification") as mock_send,
+    ):
         with pytest.raises(ValueError, match="Fatal Error"):
             run_continual_stream(
                 problems_file=problems_file,

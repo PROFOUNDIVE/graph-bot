@@ -26,9 +26,10 @@ def test_send_slack_notification_success():
 
 
 def test_send_slack_notification_failure_log():
-    with patch("urllib.request.urlopen") as mock_urlopen, patch(
-        "graph_bot.utils.slack.logger"
-    ) as mock_logger:
+    with (
+        patch("urllib.request.urlopen") as mock_urlopen,
+        patch("graph_bot.utils.slack.logger") as mock_logger,
+    ):
         mock_response = MagicMock()
         mock_response.status = 500
         mock_response.reason = "Internal Server Error"

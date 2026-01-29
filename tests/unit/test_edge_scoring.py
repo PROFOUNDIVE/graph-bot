@@ -1,8 +1,6 @@
-import pytest
-from pathlib import Path
-from src.graph_bot.adapters.graphrag import GraphRAGAdapter
-from src.graph_bot.datatypes import MetaGraph, ReasoningNode, ReasoningEdge, UserQuery
-from src.graph_bot.settings import settings
+from graph_bot.adapters.graphrag import GraphRAGAdapter
+from graph_bot.datatypes import MetaGraph, ReasoningNode, ReasoningEdge, UserQuery
+from graph_bot.settings import settings
 
 
 class TestEdgeScoring:
