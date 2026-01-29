@@ -103,6 +103,10 @@ Required keys (schema v0):
 
 Optional keys:
 - `parent_id`, `span_id`, `component`, `latency_ms`, `metadata`
+- `metadata` recommended keys in v0.3:
+    - `stream_run_id`, `problem_id`, `t`, `operation`, `status`
+    - `packed_context_tokens` (for `rag_retrieval` events): total tokens of context packed into the prompt.
+    - `edges_added_count` (for `insertion` events): number of new edges created.
 
 Minimal example:
 ```json
