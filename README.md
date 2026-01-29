@@ -70,6 +70,21 @@ This produces JSONL logs under `outputs/stream_logs/`:
 graph-bot amortize outputs/stream_logs/run.stream.jsonl --out outputs/amortization_curve.csv
 ```
 
+## v0.3 New Features
+
+### Distillation Loop
+Version 0.3 introduces a dual-path distillation process to compress MetaGraph knowledge:
+- **`distill(query)`**: Pre-emptive distillation that generates optimized reasoning templates for specific query clusters.
+- **`distill(trace)`**: Post-hoc distillation that refines successful reasoning traces into reusable graph structures.
+
+### Online Edge Creation
+The system now supports **connect-to-retrieved** logic during tree generation. When new thoughts are generated, the engine proactively searches the MetaGraph for existing nodes to link to, enabling cross-episode knowledge transfer in real-time.
+
+### Budget Enforcement
+Strict resource limits are now enforced at the pipeline level:
+- **Max Templates**: Limits the number of unique reasoning templates stored per task category.
+- **Max Paths**: Caps the number of retrieval paths explored during prompt instantiation to maintain low latency.
+
 ## Repository Structure
 
 - `src/`: main source code
@@ -133,7 +148,10 @@ Notable settings:
 - `GRAPH_BOT_PRICING_PATH`: path to pricing YAML (default: `configs/pricing/pricing_v0.yaml`)
 - `GRAPH_BOT_EXECUTION_TIMEOUT_SEC`: per-problem hard timeout (default: `60.0`)
 - `GRAPH_BOT_TOP_K_PATHS`: retrieval top-k
+- `GRAPH_BOT_MAX_TEMPLATES`: max unique templates per category
+- `GRAPH_BOT_MAX_PATHS`: max paths to explore during retrieval
 - `GRAPH_BOT_EMA_ALPHA`, `GRAPH_BOT_EMA_TAU_DAYS`: update/pruning parameters
+- `GRAPH_BOT_SLACK_WEBHOOK_URL`: Slack incoming webhook for automated experiment reporting
 
 ### Adapters (`adapters/`)
 
@@ -177,10 +195,12 @@ Notable settings:
 - Pruning heuristic: if `n_seen >= 5` and `ema_success < 0.2`
 - Defaults: `α=0.1`, `τ=7 days`, `N_min=5`, `p_min=0.2`
 
-### Selection Policy
+### Retrieval & Selection Policy
 
-- Stage A: semantic top-K (embedding or lexical similarity)
-- Stage B: stats rerank (`ema_success`, `avg_cost`, path length)
+- **Stage A: Semantic Top-K**: Retrieval using embedding or lexical similarity.
+- **Stage B: Stats Rerank**: Ranking by `ema_success`, `avg_cost`, and path length.
+- **Edge Stats**: Selection now considers edge-level weights and transition probabilities.
+- **Boundary-Only Packing**: Optimized prompt construction that packs only the most relevant graph boundaries to stay within context limits.
 
 ## Week 4 Research Notes (Summary)
 
