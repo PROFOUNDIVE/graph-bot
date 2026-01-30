@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 from openai import OpenAI
 
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
 
 @dataclass(frozen=True)
 class LLMUsage:
@@ -12,6 +17,7 @@ class LLMUsage:
     completion_tokens: int | None
     total_tokens: int | None
     latency_ms: float
+    audit_prompt_tokens: int | None = None
 
 
 class VLLMOpenAIClient:
@@ -33,6 +39,16 @@ class VLLMOpenAIClient:
     def chat(
         self, *, system: str, user: str, temperature: float = 0.0
     ) -> tuple[str, LLMUsage]:
+        audit_prompt_tokens = None
+        if tiktoken and self._model.startswith(("gpt", "o1")):
+            try:
+                encoding = tiktoken.encoding_for_model(self._model)
+                audit_prompt_tokens = len(encoding.encode(system)) + len(
+                    encoding.encode(user)
+                )
+            except Exception:
+                pass
+
         start = time.perf_counter()
         resp = self._client.chat.completions.create(
             model=self._model,
@@ -55,5 +71,6 @@ class VLLMOpenAIClient:
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 total_tokens=getattr(usage, "total_tokens", None),
                 latency_ms=latency_ms,
+                audit_prompt_tokens=audit_prompt_tokens,
             ),
         )

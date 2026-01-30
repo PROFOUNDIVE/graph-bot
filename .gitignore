@@ -22,3 +22,4 @@ src/graph_bot.egg-info/
 # Local environment files
 .env
 .env.*
+configs/pricing/site_specific.yaml

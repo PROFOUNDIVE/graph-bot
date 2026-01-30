@@ -12,6 +12,7 @@ class LLMUsage:
     completion_tokens: int | None
     total_tokens: int | None
     latency_ms: float
+    audit_prompt_tokens: int | None = None
 
 
 # Mock classes to mimic OpenAI API response structure
@@ -131,5 +132,6 @@ class MockLLMClient:
                 completion_tokens=getattr(usage, "completion_tokens", None),
                 total_tokens=getattr(usage, "total_tokens", None),
                 latency_ms=latency_ms,
+                audit_prompt_tokens=None,
             ),
         )
