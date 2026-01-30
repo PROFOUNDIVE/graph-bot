@@ -85,6 +85,12 @@ Strict resource limits are now enforced at the pipeline level:
 - **Max Templates**: Limits the number of unique reasoning templates stored per task category.
 - **Max Paths**: Caps the number of retrieval paths explored during prompt instantiation to maintain low latency.
 
+### Cost Audit & Reliability
+To ensure experimental integrity and billing transparency:
+- **Run Manifest**: A global ledger (`outputs/run_manifest.jsonl`) tracks every run attempt, ensuring failed/crashed runs are accounted for.
+- **Token Audit**: Client-side token counting (via `tiktoken`) validates API-reported usage. Discrepancies > 5% trigger `token_audit_gap` warnings.
+- **Site-Specific Pricing**: Local pricing overrides are supported via `configs/pricing/site_specific.yaml` to handle region-specific rates.
+
 ## Repository Structure
 
 - `src/`: main source code
@@ -121,6 +127,7 @@ This repo writes two different kinds of files during runs:
     - `<run_id>.problems.jsonl`: Per-problem aggregated metrics.
     - `<run_id>.stream.jsonl`: Cumulative stream metrics.
     - `<run_id>.token_events.jsonl`: Event-level usage/cost logs (G2 instrumentation).
+  - `outputs/run_manifest.jsonl`: Persistent ledger of all run attempts (status: STARTED/COMPLETED/FAILED).
   - `outputs/test_logs*/`: ad-hoc / test run outputs used for schema/policy verification.
   - `outputs/runs/`, `outputs/artifacts/`: optional structured output roots (see `configs/paths.yaml`).
 
