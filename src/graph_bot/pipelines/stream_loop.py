@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
+from ..adapters.distiller import GraphRAGDistiller
 from ..adapters.graphrag import GraphRAGAdapter
 from ..datatypes import (
     PathEvaluation,
@@ -19,6 +20,7 @@ from ..datatypes import (
     UserQuery,
 )
 from ..eval.validators import BaseValidator, get_validator
+from ..interfaces import AbstractDistiller
 from ..pipelines.metrics_logger import StreamMetricsLogger
 from ..utils.pricing import calculate_cost, load_pricing_table
 from ..utils.slack import send_slack_notification
@@ -65,45 +67,6 @@ def load_game24_problems(file_path: Path) -> List[Game24Problem]:
     return problems
 
 
-def _distill_query(query: UserQuery) -> UserQuery:
-    """Distill query for retrieval: sort numbers and normalize format.
-
-    Extracts the first 4 numbers (inputs), sorts them, and formats as:
-    'Solve 24 with <n1> <n2> <n3> <n4>'
-    """
-    import re
-
-    # Only apply to Game24
-    if query.metadata and query.metadata.get("task") != "game24":
-        return query
-
-    # Parse numbers (reuse logic from existing code)
-    pattern = re.compile(r"(-?\d+\.?\d*)")
-    all_matches = pattern.findall(query.question)
-
-    if not all_matches:
-        return query
-
-    try:
-        nums = [int(float(x)) for x in all_matches]
-    except ValueError:
-        return query
-
-    # Expect at least 4 numbers (inputs)
-    if len(nums) < 4:
-        return query
-
-    # Take first 4 as inputs and sort them
-    # Note: Game24Problem guarantees inputs come first in the question string.
-    inputs = nums[:4]
-    inputs.sort()
-
-    sorted_str = " ".join(str(x) for x in inputs)
-    new_question = f"Solve 24 with {sorted_str}"
-
-    return query.model_copy(update={"question": new_question})
-
-
 def run_continual_stream(
     *,
     problems_file: Path,
@@ -112,6 +75,7 @@ def run_continual_stream(
     policy_id: str | None = None,
     validator_mode: str = "oracle",
     validator_gated_update: bool = True,
+    distiller: AbstractDistiller | None = None,
     max_problems: int | None = None,
     metrics_out_dir: Path = Path("outputs/stream_logs"),
     run_id: str = "run",
@@ -131,6 +95,8 @@ def run_continual_stream(
         policy_id=policy_id,
     )
     validator = get_validator(validator_mode)
+    if distiller is None:
+        distiller = GraphRAGDistiller()
     metrics = StreamMetricsLogger(out_dir=metrics_out_dir, run_id=run_id)
 
     # Manifest Integration
@@ -170,7 +136,12 @@ def run_continual_stream(
                     distilled_query = query
                     if not is_baseline:
                         start_distill = time.perf_counter()
-                        distilled_query = _distill_query(query)
+                        distilled_question = query.question
+                        if query.metadata and query.metadata.get("task") == "game24":
+                            distilled_question = distiller.distill_query(query.question)
+                        distilled_query = query.model_copy(
+                            update={"question": distilled_question}
+                        )
                         latency_distill = (time.perf_counter() - start_distill) * 1000.0
                         metrics.log_token_event(
                             {
@@ -319,6 +290,7 @@ def run_continual_stream(
                         if should_update:
                             _insert_solution_template(
                                 adapter=adapter,
+                                distiller=distiller,
                                 metrics=metrics,
                                 t=t,
                                 problem_id=problem_id,
@@ -615,6 +587,7 @@ def _count_contaminated_templates(graph, paths: list) -> int:
 def _insert_solution_template(
     *,
     adapter: GraphRAGAdapter,
+    distiller: AbstractDistiller,
     metrics: StreamMetricsLogger,
     t: int,
     problem_id: str,
@@ -627,7 +600,26 @@ def _insert_solution_template(
 
     # 1. Distill trace into a compact template
     start_distill = time.perf_counter()
-    distilled_text = _distill_trace(answer_text, query)
+    distill_tree = ReasoningTree(
+        tree_id=f"episode-{problem_id}",
+        root_id=f"episode-{problem_id}-solution",
+        nodes=[
+            ReasoningNode(
+                node_id=f"episode-{problem_id}-solution",
+                text=answer_text,
+                type="answer",
+                attributes={"query": query.question},
+            )
+        ],
+        edges=[],
+        provenance={
+            "task": "game24",
+            "source": "stream",
+            "query": query.question,
+            "solved": solved,
+        },
+    )
+    distilled_nodes = distiller.distill_trace(distill_tree)
     latency_distill = (time.perf_counter() - start_distill) * 1000.0
 
     metrics.log_token_event(
@@ -673,18 +665,7 @@ def _insert_solution_template(
     tree = ReasoningTree(
         tree_id=f"episode-{problem_id}",
         root_id=f"episode-{problem_id}-solution",
-        nodes=[
-            ReasoningNode(
-                node_id=f"episode-{problem_id}-solution",
-                text=distilled_text,
-                type="thought",
-                attributes={
-                    "subtype": "template",
-                    "quality": {"validator_passed": solved},
-                    "original_answer": answer_text,
-                },
-            )
-        ],
+        nodes=distilled_nodes,
         edges=edges,
         provenance={"task": "game24", "source": "stream"},
     )
@@ -709,48 +690,6 @@ def _insert_solution_template(
             "cost_usd": 0.0,
         }
     )
-
-
-def _distill_trace(answer_text: str, query: UserQuery) -> str:
-    """Distill the solution trace into a compact template (<120 tokens).
-
-    Format:
-    Task: Game24
-    Input: <numbers>
-    Solution: <expression>
-    """
-    import re
-
-    # Extract input numbers from the query string
-    # Expected query format: "Solve 24 with 2 5 8 11" or "2 5 8 11 -> 24"
-    pattern = re.compile(r"(-?\d+\.?\d*)")
-    all_nums = pattern.findall(query.question)
-
-    # Normalize numbers (remove trailing .0)
-    normalized_nums = []
-    for x in all_nums:
-        try:
-            f = float(x)
-            if f.is_integer():
-                normalized_nums.append(str(int(f)))
-            else:
-                normalized_nums.append(x)
-        except ValueError:
-            normalized_nums.append(x)
-
-    # Heuristic: First 4 numbers are inputs in Game24 (as per Game24Problem.to_user_query)
-    inputs = normalized_nums[:4]
-    input_str = " ".join(inputs)
-
-    # answer_text is already the clean expression from _solve_with_retries
-
-    template = f"Task: Game24\n" f"Input: {input_str}\n" f"Solution: {answer_text}"
-
-    # Basic truncation to ensure bounded size (approx check)
-    if len(template) > 500:  # ~120 tokens is roughly 400-500 chars
-        template = template[:500] + "..."
-
-    return template
 
 
 def _normalize_candidate_line(
@@ -1039,7 +978,7 @@ Input: {input}
             raw_output, allowed_numbers=numbers
         )
 
-        attempt_passed = False
+        attempt_passed: bool = False
         reason = None
         precheck_failure_reason = None
 
@@ -1050,7 +989,9 @@ Input: {input}
             )
             start_val = time.perf_counter()
             if precheck_failure_reason is None:
-                attempt_passed = validator.validate(candidate_line, query.question)
+                attempt_passed = bool(
+                    validator.validate(candidate_line, query.question)
+                )
                 if attempt_passed:
                     answer_text = candidate_line
                 else:
@@ -1084,7 +1025,7 @@ Input: {input}
                 operation="solve",
                 attempt_index=attempt_index,
                 temperature=temperature,
-                validator_passed=attempt_passed,
+                validator_passed=bool(attempt_passed),
                 failure_reason=reason,
                 prompt_variant=prompt_variant,
                 prompt_tokens=prompt_tokens,
@@ -1141,7 +1082,7 @@ Input: {input}
                 operation="validate",
                 attempt_index=attempt_index,
                 temperature=temperature,
-                validator_passed=attempt_passed,
+                validator_passed=bool(attempt_passed),
                 failure_reason=reason,
                 prompt_variant=prompt_variant,
                 latency_ms=latency_val_ms,
@@ -1208,7 +1149,12 @@ Input: {input}
 
 
 def _solve_with_retrieval(query: UserQuery, retrieval) -> tuple[str, dict[str, object]]:
+    """Solve problem using retrieved templates.
+
+    Currently stubbed - returns placeholder answer.
+    Future: Integrate with actual LLM API.
+    """
     from ..pipelines.main_loop import answer_with_retrieval
 
     answer = answer_with_retrieval(query, retrieval=retrieval)
-    return answer.answer, dict(answer.metadata or {})
+    return answer.answer
