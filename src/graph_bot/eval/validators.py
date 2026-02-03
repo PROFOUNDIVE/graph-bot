@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import operator
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, Optional
 
+from ..datatypes import ReasoningNode
+from ..interfaces import AbstractValidator
 from ..logsetting import logger
 
 
@@ -69,18 +71,23 @@ def extract_game24_expression_number_literals(expr: str) -> list[int] | None:
     return numbers
 
 
-class BaseValidator(ABC):
+class BaseValidator(AbstractValidator):
     """Base class for answer validation."""
 
     @abstractmethod
-    def validate(self, answer: str, problem: str) -> bool:
-        """Validate answer for given problem."""
+    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
         pass
 
     def failure_reason(self, answer: str, problem: str) -> str | None:
         del answer
         del problem
         return None
+
+    def get_failure_reason(self, node: ReasoningNode) -> Optional[str]:
+        problem = node.attributes.get("problem") if node.attributes else None
+        if not problem:
+            return "missing_problem_context"
+        return self.failure_reason(node.text, problem)
 
     @abstractmethod
     def get_validator_name(self) -> str:
@@ -129,7 +136,20 @@ class Game24Validator(BaseValidator):
         except Exception:
             return "format_error"
 
-    def validate(self, answer: str, problem: str) -> bool:
+    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
+        if isinstance(node, ReasoningNode):
+            problem_str = node.attributes.get("problem") if node.attributes else None
+            if not problem_str:
+                logger.debug("Validation failed: missing problem context in node attributes")
+                return 0.0
+            return 1.0 if self._validate_answer(node.text, problem_str) else 0.0
+
+        if problem is None:
+            logger.warning("Validation failed: problem string is required for legacy validate call")
+            return False
+        return self._validate_answer(node, problem)
+
+    def _validate_answer(self, answer: str, problem: str) -> bool:
         try:
             problem_numbers = extract_game24_problem_numbers(problem)
             if problem_numbers and problem_numbers[-1] == 24:
@@ -209,7 +229,7 @@ class Game24Validator(BaseValidator):
 class ExecRepairValidator(BaseValidator):
     """Validator for code-augmented tasks using execution and repair loop."""
 
-    def validate(self, answer: str, problem: str) -> bool:
+    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
         """Validate using execution and repair logic."""
         raise NotImplementedError("ExecRepairValidator not yet implemented")
 
@@ -220,7 +240,7 @@ class ExecRepairValidator(BaseValidator):
 class WeakLLMJudgeValidator(BaseValidator):
     """Weak validator using LLM judgment for domains without ground truth."""
 
-    def validate(self, answer: str, problem: str) -> bool:
+    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
         """Validate using LLM as judge."""
         raise NotImplementedError("WeakLLMJudgeValidator not yet implemented")
 
