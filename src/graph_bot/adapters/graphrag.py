@@ -4,7 +4,10 @@ import hashlib
 import json
 import math
 import re
+import subprocess
+import tomllib
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -48,6 +51,55 @@ def _hash_key(text: str) -> str:
 
 def _tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall(text.lower())
+
+
+def _read_app_version() -> str | None:
+    try:
+        return metadata.version("graph-bot")
+    except Exception:
+        pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        try:
+            pyproject_text = pyproject_path.read_text(encoding="utf-8")
+            data = tomllib.loads(pyproject_text)
+        except OSError:
+            return None
+        project = data.get("project", {})
+        if isinstance(project, dict):
+            version = project.get("version")
+            if isinstance(version, str):
+                return version
+        tool = data.get("tool", {})
+        if isinstance(tool, dict):
+            poetry = tool.get("poetry", {})
+            if isinstance(poetry, dict):
+                version = poetry.get("version")
+                if isinstance(version, str):
+                    return version
+        return None
+
+
+def _read_git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _build_run_config(
+    *, model: str | None, mode: str | None, policy_id: str | None
+) -> Dict[str, Any]:
+    return {
+        "model": model or "unknown",
+        "mode": mode or "unknown",
+        "policy_id": policy_id or "unknown",
+    }
 
 
 def _default_node_stats() -> Dict[str, Any]:
@@ -178,7 +230,18 @@ class GraphRAGAdapter:
             return MetaGraph.model_validate(data)
         return MetaGraph(
             graph_id="metagraph-v0.1",
-            metadata={"created_at": _now_iso(), "version": "v0.1"},
+            metadata={
+                "created_at": _now_iso(),
+                "schema_version": "v0.1",
+                "version": "v0.1",
+                "app_version": _read_app_version(),
+                "git_commit": _read_git_commit(),
+                "run_config": _build_run_config(
+                    model=settings.llm_model,
+                    mode=self.mode,
+                    policy_id=self.policy_id,
+                ),
+            },
         )
 
     def _save_graph(self) -> None:
@@ -189,7 +252,15 @@ class GraphRAGAdapter:
     def _touch_metadata(self) -> None:
         metadata = dict(self._graph.metadata or {})
         metadata.setdefault("created_at", _now_iso())
-        metadata.setdefault("version", "v0.1")
+        metadata["schema_version"] = "v0.1"
+        metadata["version"] = metadata["schema_version"]
+        metadata["app_version"] = _read_app_version()
+        metadata["git_commit"] = _read_git_commit()
+        metadata["run_config"] = _build_run_config(
+            model=settings.llm_model,
+            mode=self.mode,
+            policy_id=self.policy_id,
+        )
         metadata["last_updated_at"] = _now_iso()
         self._graph.metadata = metadata
 
