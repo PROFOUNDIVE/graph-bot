@@ -131,6 +131,15 @@ This repo writes two different kinds of files during runs:
   - `outputs/test_logs*/`: ad-hoc / test run outputs used for schema/policy verification.
   - `outputs/runs/`, `outputs/artifacts/`: optional structured output roots (see `configs/paths.yaml`).
 
+### Testing Artifact Conventions
+
+When writing tests under `tests/`, ensure any files created are unmistakably test-only:
+
+- Prefer `tmp_path` for all generated artifacts.
+- If a test needs a `run_id`, it MUST start with `test_` (e.g., `test_e2e_run`).
+- Any persisted test artifacts under `outputs/` MUST use a `test_` prefix (file/dir).
+- Logs produced during tests MUST be redirected to `logs/test_execution.log` (fixtures handle this; do not write timestamped log files during tests).
+
 Note: `graph-bot llm-server` writes server logs to `vllm_server.log` by default.
 
 ## Technical Architecture (`src/graph_bot`)
