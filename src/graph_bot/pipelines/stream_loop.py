@@ -1148,13 +1148,11 @@ Input: {input}
     )
 
 
-def _solve_with_retrieval(query: UserQuery, retrieval) -> tuple[str, dict[str, object]]:
+def _solve_with_retrieval(query: UserQuery, retrieval) -> str:
     """Solve problem using retrieved templates.
 
     Currently stubbed - returns placeholder answer.
     Future: Integrate with actual LLM API.
     """
-    from ..pipelines.main_loop import answer_with_retrieval
-
-    answer = answer_with_retrieval(query, retrieval=retrieval)
-    return answer.answer
+    _ = (query, retrieval)
+    return "RETRIEVAL_PLACEHOLDER"
