@@ -92,6 +92,36 @@ def _read_git_commit() -> str | None:
     return commit or None
 
 
+def _read_git_describe() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    description = result.stdout.strip()
+    return description or None
+
+
+def _read_git_branch() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    branch = result.stdout.strip()
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
 def _build_run_config(
     *, model: str | None, mode: str | None, policy_id: str | None
 ) -> Dict[str, Any]:
@@ -236,6 +266,8 @@ class GraphRAGAdapter:
                 "version": "v0.1",
                 "app_version": _read_app_version(),
                 "git_commit": _read_git_commit(),
+                "git_describe": _read_git_describe(),
+                "branch": _read_git_branch(),
                 "run_config": _build_run_config(
                     model=settings.llm_model,
                     mode=self.mode,
@@ -256,6 +288,8 @@ class GraphRAGAdapter:
         metadata["version"] = metadata["schema_version"]
         metadata["app_version"] = _read_app_version()
         metadata["git_commit"] = _read_git_commit()
+        metadata["git_describe"] = _read_git_describe()
+        metadata["branch"] = _read_git_branch()
         metadata["run_config"] = _build_run_config(
             model=settings.llm_model,
             mode=self.mode,

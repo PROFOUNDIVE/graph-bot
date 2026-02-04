@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import math
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -208,6 +209,32 @@ def test_persistence(tmp_path):
     graph = adapter2.export_graph()
     assert len(graph.nodes) == 1
     assert graph.nodes[0].text == "Persistent"
+
+
+def test_metagraph_metadata_includes_git_describe_and_branch(tmp_path):
+    metagraph_path = tmp_path / "metagraph.json"
+
+    def fake_run(args, **_kwargs):
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+        if args == ["git", "describe", "--tags", "--always", "--dirty"]:
+            return subprocess.CompletedProcess(
+                args, 0, stdout="v0.3.0-1-gabc123\n", stderr=""
+            )
+        if args == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+        raise AssertionError(f"unexpected git invocation: {args!r}")
+
+    with (
+        patch("graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path),
+        patch("graph_bot.adapters.graphrag.subprocess.run", side_effect=fake_run),
+    ):
+        adapter = GraphRAGAdapter()
+
+    meta = adapter.export_graph().metadata or {}
+    assert meta["git_commit"] == "abc123"
+    assert meta["git_describe"] == "v0.3.0-1-gabc123"
+    assert meta["branch"] == "main"
 
 
 def test_retrieve_paths(adapter):
