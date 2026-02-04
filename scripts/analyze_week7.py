@@ -146,26 +146,34 @@ def plot_exp3_contamination(base_dir: Path | None = None) -> None:
 
 def plot_exp4_memory_growth(base_dir: Path | None = None) -> None:
     base = resolve_base_dir(base_dir)
-    log_path = base / "outputs" / "stream_logs" / "exp4_dryrun.stream.jsonl"
-    if not log_path.exists():
+    problems_path = base / "outputs" / "stream_logs" / "exp4_dryrun.problems.jsonl"
+    stream_path = base / "outputs" / "stream_logs" / "exp4_dryrun.stream.jsonl"
+
+    if not problems_path.exists() and not stream_path.exists():
         print("No EXP4 data found.")
         return
 
-    df = load_stream_log(log_path)
-    if df.empty:
-        print("EXP4 log is empty.")
-        return
+    # Prefer per-problem metrics: memory_n_nodes/memory_n_edges are emitted in problems.jsonl.
+    df = load_stream_log(problems_path) if problems_path.exists() else pd.DataFrame()
+    x_col = "t"
+    nodes_col = "memory_n_nodes"
+    edges_col = "memory_n_edges"
 
-    if not {"t", "metagraph_nodes", "metagraph_edges"}.issubset(df.columns):
-        print("EXP4 log missing required columns.")
-        return
+    if df.empty or not {x_col, nodes_col, edges_col}.issubset(df.columns):
+        # Fallback: some runs may only log metagraph growth in stream.jsonl.
+        df = load_stream_log(stream_path) if stream_path.exists() else pd.DataFrame()
+        nodes_col = "metagraph_nodes"
+        edges_col = "metagraph_edges"
+        if df.empty or not {x_col, nodes_col, edges_col}.issubset(df.columns):
+            print("EXP4 log missing required columns.")
+            return
 
-    df_sorted = df.sort_values("t")
+    df_sorted = df.sort_values(x_col)
 
     fig, ax_left = plt.subplots(figsize=(10, 6))
     ax_left.plot(
-        df_sorted["t"],
-        df_sorted["metagraph_nodes"],
+        df_sorted[x_col],
+        df_sorted[nodes_col],
         color="blue",
         label="Metagraph Nodes",
     )
@@ -174,8 +182,8 @@ def plot_exp4_memory_growth(base_dir: Path | None = None) -> None:
 
     ax_right = ax_left.twinx()
     ax_right.plot(
-        df_sorted["t"],
-        df_sorted["metagraph_edges"],
+        df_sorted[x_col],
+        df_sorted[edges_col],
         color="green",
         label="Metagraph Edges",
     )
