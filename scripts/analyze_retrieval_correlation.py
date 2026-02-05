@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import List
 
+
 def analyze_correlation(file_paths: List[Path]) -> None:
     """
     Analyzes the correlation between retrieval hits and problem success.
@@ -52,32 +53,40 @@ def analyze_correlation(file_paths: List[Path]) -> None:
     print("Contingency Table:")
     print(f"{'':<15} | {'Solved':<10} | {'Failed':<10} | {'Total':<10}")
     print("-" * 55)
-    print(f"{'Retrieval Hit':<15} | {hits_solved:<10} | {hits_failed:<10} | {total_hits:<10}")
-    print(f"{'Retrieval Miss':<15} | {miss_solved:<10} | {miss_failed:<10} | {total_miss:<10}")
+    print(
+        f"{'Retrieval Hit':<15} | {hits_solved:<10} | {hits_failed:<10} | {total_hits:<10}"
+    )
+    print(
+        f"{'Retrieval Miss':<15} | {miss_solved:<10} | {miss_failed:<10} | {total_miss:<10}"
+    )
     print("-" * 55)
     print(f"P(Success | Hit):  {p_success_hit:.4f}")
     print(f"P(Success | Miss): {p_success_miss:.4f}")
     print(f"Delta (Lift):      {delta:.4f}")
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze correlation between retrieval hits and problem success.")
+    parser = argparse.ArgumentParser(
+        description="Analyze correlation between retrieval hits and problem success."
+    )
     parser.add_argument(
-        "pattern", 
-        nargs="?", 
-        default="outputs/stream_logs/exp1_*.problems.jsonl", 
-        help="Glob pattern for problem JSONL files (default: outputs/stream_logs/exp1_*.problems.jsonl)"
+        "pattern",
+        nargs="?",
+        default="outputs/stream_logs/exp1_*.problems.jsonl",
+        help="Glob pattern for problem JSONL files (default: outputs/stream_logs/exp1_*.problems.jsonl)",
     )
     args = parser.parse_args()
 
     # Expand the glob pattern
     files = [Path(p) for p in glob.glob(args.pattern)]
-    
+
     if not files:
         print(f"No files found matching pattern: {args.pattern}")
         sys.exit(1)
-    
+
     print(f"Analyzing {len(files)} files...")
     analyze_correlation(files)
+
 
 if __name__ == "__main__":
     main()

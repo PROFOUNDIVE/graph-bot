@@ -38,7 +38,7 @@ def calculate_stats():
     # Averages across runs
     accuracy = (total_solved_count / total_problems) * 100 if total_problems else 0
     avg_cost = np.mean(all_costs) if all_costs else 0
-    total_cost_per_run = sum(all_costs) / len(run_files) if run_files else 0  # approx
+    avg_cost_per_run = sum(all_costs) / len(run_files) if run_files else 0  # approx
 
     p50_latency = np.percentile(all_latencies, 50) / 1000.0 if all_latencies else 0
     p95_latency = np.percentile(all_latencies, 95) / 1000.0 if all_latencies else 0
@@ -49,6 +49,7 @@ def calculate_stats():
     print(f"Accuracy: {accuracy:.2f}% ({total_solved_count}/{total_problems})")
     print(f"Avg Cost per Problem: ${avg_cost:.6f}")
     print(f"Total Cost (approx per run N=98): ${avg_cost * 98:.4f}")
+    print(f"Average Cost per Run: ${avg_cost_per_run:.6f}")
     print(f"Latency (s): p50 {p50_latency:.2f}, p95 {p95_latency:.2f}")
     print(f"Tokens: p50 {p50_tokens:.1f}, avg {avg_tokens:.1f}")
     print(f"Runs included: {len(run_files)}")

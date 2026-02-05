@@ -14,6 +14,26 @@ def resolve_base_dir(base_dir: Path | None) -> Path:
     return base_dir.resolve() if base_dir is not None else ROOT_DIR
 
 
+def load_stream_log_with_longest(path: Path) -> pd.DataFrame:
+    df = load_stream_log(path)
+    if df.empty:
+        return df
+    if "t" in df.columns:
+        reset_indices = df.index[df["t"] == 1].tolist()
+        if not reset_indices:
+            return df
+        reset_indices.append(len(df))
+        longest_df = pd.DataFrame()
+        for i in range(len(reset_indices) - 1):
+            start = reset_indices[i]
+            end = reset_indices[i + 1]
+            sub_df = df.iloc[start:end]
+            if len(sub_df) > len(longest_df):
+                longest_df = sub_df
+        return longest_df
+    return df
+
+
 def load_stream_log(path: Path) -> pd.DataFrame:
     data: list[dict] = []
     if not path.exists():
@@ -198,9 +218,12 @@ def plot_exp4_memory_growth(base_dir: Path | None = None) -> None:
     fig.suptitle("EXP4: Memory Growth (Nodes/Edges)")
 
     (base / "outputs" / "figures").mkdir(parents=True, exist_ok=True)
-    output_path = base / "outputs" / "figures" / "exp4_memory_growth_viz.png"
+    output_path = base / "outputs" / "figures" / "exp4_memory_growth.png"
+    output_path_viz = base / "outputs" / "figures" / "exp4_memory_growth_viz.png"
     plt.savefig(output_path)
     print(f"Saved {output_path}")
+    plt.savefig(output_path_viz)
+    print(f"Saved {output_path_viz}")
 
 
 def report_exp2_formal_logs(base_dir: Path | None = None) -> None:
@@ -213,11 +236,294 @@ def report_exp2_formal_logs(base_dir: Path | None = None) -> None:
     print(f"Found {len(files)} EXP2 formal log(s).")
 
 
+def plot_exp2_efficiency(base_dir: Path | None = None) -> None:
+    base = resolve_base_dir(base_dir)
+    cold_path = base / "outputs" / "stream_logs" / "exp2_formal_cold.stream.jsonl"
+    seed_path = base / "outputs" / "stream_logs" / "exp2_formal_warm_seed.stream.jsonl"
+    online_path = (
+        base / "outputs" / "stream_logs" / "exp2_formal_warm_online.stream.jsonl"
+    )
+
+    df_cold = (
+        load_stream_log_with_longest(cold_path)
+        if cold_path.exists()
+        else pd.DataFrame()
+    )
+    df_seed = (
+        load_stream_log_with_longest(seed_path)
+        if seed_path.exists()
+        else pd.DataFrame()
+    )
+    df_online = (
+        load_stream_log_with_longest(online_path)
+        if online_path.exists()
+        else pd.DataFrame()
+    )
+
+    plotted = 0
+    required = {"cumulative_api_cost_usd", "cumulative_solved"}
+
+    plt.figure(figsize=(10, 6))
+
+    # Cold
+    if not df_cold.empty:
+        if required.issubset(df_cold.columns):
+            x = df_cold["cumulative_api_cost_usd"].astype(float)
+            y = df_cold["cumulative_solved"].astype(float)
+            plt.plot(x, y, label="EXP2 Cold (Formal)", alpha=0.8)
+            plotted += 1
+        else:
+            print(
+                "EXP2 Cold (Formal): missing required columns: {}".format(
+                    sorted(list(required))
+                )
+            )
+
+    # Seed
+    if not df_seed.empty:
+        if required.issubset(df_seed.columns):
+            x = df_seed["cumulative_api_cost_usd"].astype(float)
+            y = df_seed["cumulative_solved"].astype(float)
+            plt.plot(x, y, label="EXP2 Warm Seed", alpha=0.8)
+            plotted += 1
+        else:
+            print(
+                "EXP2 Warm Seed: missing required columns: {}".format(
+                    sorted(list(required))
+                )
+            )
+
+    # Online
+    if not df_online.empty:
+        if required.issubset(df_online.columns):
+            seed_cost = (
+                float(df_seed["cumulative_api_cost_usd"].iloc[-1])
+                if not df_seed.empty
+                else 0.0
+            )
+            seed_solved = (
+                float(df_seed["cumulative_solved"].iloc[-1])
+                if not df_seed.empty
+                else 0.0
+            )
+            x = df_online["cumulative_api_cost_usd"].astype(float) + seed_cost
+            y = df_online["cumulative_solved"].astype(float) + seed_solved
+            plt.plot(x, y, label="EXP2 Warm Online (Offset)", alpha=0.8)
+            plotted += 1
+        else:
+            print(
+                "EXP2 Warm Online: missing required columns: {}".format(
+                    sorted(list(required))
+                )
+            )
+
+    if plotted == 0:
+        print("EXP2: All EXP2 series skipped due to missing required columns.")
+        return
+
+    plt.xlabel("Cumulative API Cost (USD)")
+    plt.ylabel("Cumulative Solved")
+    plt.title("EXP2: Efficiency across configurations")
+    plt.legend()
+    plt.grid(True)
+    (base / "outputs" / "figures").mkdir(parents=True, exist_ok=True)
+    output_path = base / "outputs" / "figures" / "exp2_efficiency_viz.png"
+    plt.savefig(output_path)
+    print(f"Saved {output_path}")
+
+
+def plot_exp2_cost_per_solved(base_dir: Path | None = None) -> None:
+    base = resolve_base_dir(base_dir)
+    cold_path = base / "outputs" / "stream_logs" / "exp2_formal_cold.stream.jsonl"
+    seed_path = base / "outputs" / "stream_logs" / "exp2_formal_warm_seed.stream.jsonl"
+    online_path = (
+        base / "outputs" / "stream_logs" / "exp2_formal_warm_online.stream.jsonl"
+    )
+
+    df_cold = (
+        load_stream_log_with_longest(cold_path)
+        if cold_path.exists()
+        else pd.DataFrame()
+    )
+    df_seed = (
+        load_stream_log_with_longest(seed_path)
+        if seed_path.exists()
+        else pd.DataFrame()
+    )
+    df_online = (
+        load_stream_log_with_longest(online_path)
+        if online_path.exists()
+        else pd.DataFrame()
+    )
+
+    plotted_any = 0
+    plt.figure(figsize=(10, 6))
+    required = {"t", "cumulative_api_cost_usd", "cumulative_solved"}
+
+    # Cold
+    if not df_cold.empty:
+        if required.issubset(df_cold.columns):
+            t = df_cold["t"].astype(float)
+            cost = df_cold["cumulative_api_cost_usd"].astype(float)
+            solved = df_cold["cumulative_solved"].astype(float).clip(lower=1.0)
+            cps = cost / solved
+            plt.plot(t, cps, label="EXP2 Cold (Formal)", alpha=0.8)
+            plotted_any += 1
+        else:
+            print(
+                "EXP2 Cold (Formal): missing required columns: {cols}".format(
+                    cols=sorted(required)
+                )
+            )
+
+    # Seed
+    if not df_seed.empty:
+        if required.issubset(df_seed.columns):
+            t = df_seed["t"].astype(float)
+            cost = df_seed["cumulative_api_cost_usd"].astype(float)
+            solved = df_seed["cumulative_solved"].astype(float).clip(lower=1.0)
+            cps = cost / solved
+            plt.plot(t, cps, label="EXP2 Warm Seed", alpha=0.8)
+            plotted_any += 1
+        else:
+            print(
+                "EXP2 Warm Seed: missing required columns: {cols}".format(
+                    cols=sorted(required)
+                )
+            )
+
+    # Online
+    if not df_online.empty:
+        if required.issubset(df_online.columns):
+            seed_cost = (
+                float(df_seed["cumulative_api_cost_usd"].iloc[-1])
+                if not df_seed.empty
+                else 0.0
+            )
+            seed_solved = (
+                float(df_seed["cumulative_solved"].iloc[-1])
+                if not df_seed.empty
+                else 0.0
+            )
+            t = df_online["t"].astype(float)
+            denom = df_online["cumulative_solved"].astype(float) + seed_solved
+            denom = denom.clip(lower=1.0)
+            cps = (
+                df_online["cumulative_api_cost_usd"].astype(float) + seed_cost
+            ) / denom
+            plt.plot(t, cps, label="EXP2 Warm Online (Offset)", alpha=0.8)
+            plotted_any += 1
+        else:
+            print(
+                "EXP2 Warm Online: missing required columns: {cols}".format(
+                    cols=sorted(required)
+                )
+            )
+
+    if plotted_any == 0:
+        print("EXP2: All EXP2 series skipped due to missing required columns.")
+        return
+
+    plt.xlabel("Time (t)")
+    plt.ylabel("Cost per Solved ($)")
+    plt.title("EXP2: Cost per Solved")
+    plt.legend()
+    plt.grid(True)
+    (base / "outputs" / "figures").mkdir(parents=True, exist_ok=True)
+    output_path = base / "outputs" / "figures" / "exp2_cost_per_solved_viz.png"
+    plt.savefig(output_path)
+    print(f"Saved {output_path}")
+
+
+def analyze_exp2_formal_cost_summary(base_dir: Path | None = None) -> None:
+    base = resolve_base_dir(base_dir)
+    cold_path = base / "outputs" / "stream_logs" / "exp2_formal_cold.stream.jsonl"
+    seed_path = base / "outputs" / "stream_logs" / "exp2_formal_warm_seed.stream.jsonl"
+    online_path = (
+        base / "outputs" / "stream_logs" / "exp2_formal_warm_online.stream.jsonl"
+    )
+
+    df_cold = load_stream_log(cold_path) if cold_path.exists() else pd.DataFrame()
+    df_seed = load_stream_log(seed_path) if seed_path.exists() else pd.DataFrame()
+    df_online = load_stream_log(online_path) if online_path.exists() else pd.DataFrame()
+
+    cold_cost = (
+        float(df_cold["cumulative_api_cost_usd"].iloc[-1])
+        if not df_cold.empty and "cumulative_api_cost_usd" in df_cold.columns
+        else 0.0
+    )
+    cold_solved = (
+        float(df_cold["cumulative_solved"].iloc[-1])
+        if not df_cold.empty and "cumulative_solved" in df_cold.columns
+        else 0.0
+    )
+
+    seed_cost = (
+        float(df_seed["cumulative_api_cost_usd"].iloc[-1])
+        if not df_seed.empty and "cumulative_api_cost_usd" in df_seed.columns
+        else 0.0
+    )
+    seed_solved = (
+        float(df_seed["cumulative_solved"].iloc[-1])
+        if not df_seed.empty and "cumulative_solved" in df_seed.columns
+        else 0.0
+    )
+
+    online_cost = (
+        float(df_online["cumulative_api_cost_usd"].iloc[-1])
+        if not df_online.empty and "cumulative_api_cost_usd" in df_online.columns
+        else 0.0
+    )
+    online_solved = (
+        float(df_online["cumulative_solved"].iloc[-1])
+        if not df_online.empty and "cumulative_solved" in df_online.columns
+        else 0.0
+    )
+
+    results = [
+        {
+            "condition": "Cold (Online)",
+            "phase": "Online",
+            "cost": cold_cost,
+            "solved": cold_solved,
+        },
+        {
+            "condition": "Warm (Seed)",
+            "phase": "Seed",
+            "cost": seed_cost,
+            "solved": seed_solved,
+        },
+        {
+            "condition": "Warm (Online)",
+            "phase": "Online",
+            "cost": online_cost,
+            "solved": online_solved,
+        },
+        {
+            "condition": "Warm (Total)",
+            "phase": "Total",
+            "cost": seed_cost + online_cost,
+            "solved": seed_solved + online_solved,
+        },
+    ]
+
+    df_res = pd.DataFrame(results)
+    (base / "outputs" / "tables").mkdir(parents=True, exist_ok=True)
+    output_csv = base / "outputs" / "tables" / "exp2_formal_cost_summary.csv"
+    df_res.to_csv(output_csv, index=False)
+    print(f"Saved {output_csv}")
+    print(df_res)
+
+
 def main() -> None:
     report_exp2_formal_logs()
+    analyze_exp2_formal_cost_summary()
     plot_exp1_amortization()
     plot_exp3_contamination()
     plot_exp4_memory_growth()
+    plot_exp2_efficiency()
+    plot_exp2_cost_per_solved()
+    # No runtime notepad logging per instructions
 
 
 if __name__ == "__main__":

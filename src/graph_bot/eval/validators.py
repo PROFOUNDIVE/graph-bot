@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import operator
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Dict, Optional
 
 from ..datatypes import ReasoningNode
@@ -75,7 +75,9 @@ class BaseValidator(AbstractValidator):
     """Base class for answer validation."""
 
     @abstractmethod
-    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
+    def validate(
+        self, node: str | ReasoningNode, problem: str | None = None
+    ) -> bool | float:
         pass
 
     def failure_reason(self, answer: str, problem: str) -> str | None:
@@ -136,16 +138,22 @@ class Game24Validator(BaseValidator):
         except Exception:
             return "format_error"
 
-    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
+    def validate(
+        self, node: str | ReasoningNode, problem: str | None = None
+    ) -> bool | float:
         if isinstance(node, ReasoningNode):
             problem_str = node.attributes.get("problem") if node.attributes else None
             if not problem_str:
-                logger.debug("Validation failed: missing problem context in node attributes")
+                logger.debug(
+                    "Validation failed: missing problem context in node attributes"
+                )
                 return 0.0
             return 1.0 if self._validate_answer(node.text, problem_str) else 0.0
 
         if problem is None:
-            logger.warning("Validation failed: problem string is required for legacy validate call")
+            logger.warning(
+                "Validation failed: problem string is required for legacy validate call"
+            )
             return False
         return self._validate_answer(node, problem)
 
@@ -229,7 +237,9 @@ class Game24Validator(BaseValidator):
 class ExecRepairValidator(BaseValidator):
     """Validator for code-augmented tasks using execution and repair loop."""
 
-    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
+    def validate(
+        self, node: str | ReasoningNode, problem: str | None = None
+    ) -> bool | float:
         """Validate using execution and repair logic."""
         raise NotImplementedError("ExecRepairValidator not yet implemented")
 
@@ -240,7 +250,9 @@ class ExecRepairValidator(BaseValidator):
 class WeakLLMJudgeValidator(BaseValidator):
     """Weak validator using LLM judgment for domains without ground truth."""
 
-    def validate(self, node: str | ReasoningNode, problem: str | None = None) -> bool | float:
+    def validate(
+        self, node: str | ReasoningNode, problem: str | None = None
+    ) -> bool | float:
         """Validate using LLM as judge."""
         raise NotImplementedError("WeakLLMJudgeValidator not yet implemented")
 

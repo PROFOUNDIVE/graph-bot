@@ -5,7 +5,9 @@ from pathlib import Path
 
 def main():
     p = Path("data/game24_buffer_98.jsonl")
-    lines = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [
+        line for line in p.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     assert len(lines) == 98, f"Expected 98 lines, got {len(lines)}"
     for line in lines:
         obj = json.loads(line)
