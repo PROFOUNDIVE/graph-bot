@@ -52,6 +52,10 @@ def analyze_exp1():
 
     plt.figure(figsize=(10, 6))
 
+    dfs = []
+    run_ids = []
+    run_colors = ["#7FB3D5", "#5499C7", "#2E86C1"]
+
     for log_file in log_files:
         run_id = os.path.basename(log_file).replace(".stream.jsonl", "")
         try:
@@ -59,12 +63,38 @@ def analyze_exp1():
             if df.empty:
                 print(f"Skipping empty log: {log_file}")
                 continue
-            # Plot cumulative solved vs cumulative cost
-            plt.plot(
-                df["cumulative_api_cost_usd"], df["cumulative_solved"], label=run_id
-            )
+            dfs.append(df)
+            run_ids.append(run_id)
         except Exception as e:
             print(f"Error reading {log_file}: {e}")
+
+    # Plot individual runs
+    for i, df in enumerate(dfs):
+        color = run_colors[i % len(run_colors)]
+        plt.plot(
+            df["cumulative_api_cost_usd"],
+            df["cumulative_solved"],
+            label=run_ids[i],
+            color=color,
+            alpha=0.6,
+        )
+
+    if len(dfs) > 1:
+        all_df = pd.concat(dfs)
+        if "t" in all_df.columns:
+            avg_df = (
+                all_df.groupby("t")[["cumulative_api_cost_usd", "cumulative_solved"]]
+                .mean()
+                .reset_index()
+            )
+            plt.plot(
+                avg_df["cumulative_api_cost_usd"],
+                avg_df["cumulative_solved"],
+                label=f"graph-bot: avg. of {len(dfs)} runs",
+                color="#1A5276",
+                linewidth=2.5,
+                linestyle="--",
+            )
 
     plt.xlabel("Cumulative API Cost (USD)")
     plt.ylabel("Cumulative Solved Problems")
@@ -85,7 +115,7 @@ def analyze_exp1():
         y=IO_SOLVED,
         color="#E74C3C",
         linestyle=":",
-        linewidth=2,
+        linewidth=1,
         label=f"IO (retry=3): {IO_SOLVED:.0f} solved @ ${IO_COST:.4f}",
     )
     plt.axvline(
@@ -93,25 +123,25 @@ def analyze_exp1():
         color="#E74C3C",
         linestyle=":",
         linewidth=1,
-        alpha=0.5,
+        alpha=0.7,
     )
     plt.scatter([IO_COST], [IO_SOLVED], color="#E74C3C", s=80, zorder=5, marker="x")
 
     plt.axhline(
         y=COT_SOLVED,
-        color="#F39C12",
+        color="#008000",
         linestyle=":",
-        linewidth=2,
+        linewidth=1,
         label=f"CoT (retry=3): {COT_SOLVED:.0f} solved @ ${COT_COST:.4f}",
     )
     plt.axvline(
         x=COT_COST,
-        color="#F39C12",
+        color="#008000",
         linestyle=":",
         linewidth=1,
-        alpha=0.5,
+        alpha=0.7,
     )
-    plt.scatter([COT_COST], [COT_SOLVED], color="#F39C12", s=80, zorder=5, marker="x")
+    plt.scatter([COT_COST], [COT_SOLVED], color="#008000", s=80, zorder=5, marker="x")
 
     plt.legend(loc="lower right")
 

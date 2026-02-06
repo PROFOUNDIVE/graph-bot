@@ -36,6 +36,7 @@ def viz_exp1_amortization():
 
     run_sources = sorted(df["run_source"].unique())
     run_colors = ["#7FB3D5", "#5499C7", "#2E86C1"]
+    avg_df = pd.DataFrame()
 
     for i, run_src in enumerate(run_sources):
         subset = (
@@ -70,21 +71,48 @@ def viz_exp1_amortization():
     # - CoT (retry=3): accuracy=16.33%, cost/problem=$0.00026 -> cost/solved=$0.00159
     IO_COST_PER_SOLVED = 0.00009 / 0.1735
     COT_COST_PER_SOLVED = 0.00026 / 0.1633
-
     plt.axhline(
         y=IO_COST_PER_SOLVED,
         color="#E74C3C",
         linestyle=":",
         linewidth=2,
-        label=f"IO (retry=3; 2 runs): ${IO_COST_PER_SOLVED:.5f}",
+        label=f"IO (retry=3; 2 runs): ${IO_COST_PER_SOLVED:.5f} (avg.)",
     )
     plt.axhline(
         y=COT_COST_PER_SOLVED,
         color="#008000",
         linestyle=":",
         linewidth=2,
-        label=f"CoT (retry=3; 2 runs): ${COT_COST_PER_SOLVED:.5f}",
+        label=f"CoT (retry=3; 2 runs): ${COT_COST_PER_SOLVED:.5f} (avg.)",
     )
+
+    if len(run_sources) > 1:
+        crossings = []
+        for i in range(len(avg_df) - 1):
+            c1 = avg_df.iloc[i]["cost_per_solved"]
+            c2 = avg_df.iloc[i + 1]["cost_per_solved"]
+
+            if (c1 >= COT_COST_PER_SOLVED > c2) or (c1 <= COT_COST_PER_SOLVED < c2):
+                t1 = avg_df.iloc[i]["t"]
+                t2 = avg_df.iloc[i + 1]["t"]
+                alpha = (COT_COST_PER_SOLVED - c1) / (c2 - c1)
+                cross_t = t1 + alpha * (t2 - t1)
+                crossings.append(cross_t)
+
+        if crossings:
+            target_t = crossings[1] if len(crossings) >= 2 else crossings[0]
+
+            plt.plot(target_t, COT_COST_PER_SOLVED, "ko", zorder=5)
+            plt.annotate(
+                "break-even point",
+                xy=(target_t, COT_COST_PER_SOLVED),
+                xytext=(target_t + 15, COT_COST_PER_SOLVED + 0.0006),
+                arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.2"),
+                fontsize=10,
+                bbox=dict(
+                    boxstyle="round,pad=0.3", fc="white", ec="#cccccc", alpha=0.9
+                ),
+            )
 
     plt.xlabel("Problem Index (t)")
     plt.ylabel("Cost per Solved ($)")
@@ -124,7 +152,7 @@ def viz_exp3_contamination():
             subset["t"],
             subset["contamination_rate"],
             label=f"No-Val: {run_src}",
-            linestyle="--",
+            linestyle="-",
             color=color,
             alpha=0.6,
         )
@@ -136,6 +164,7 @@ def viz_exp3_contamination():
         label="No-Val (Avg)",
         color="#922B21",
         linewidth=2.5,
+        linestyle="--",
     )
 
     if not df_val.empty:
@@ -156,7 +185,7 @@ def viz_exp3_contamination():
                 subset["t"],
                 subset["contamination_rate"],
                 label=f"With-Val: {run_src}",
-                linestyle="--",
+                linestyle="-",
                 color=color,
                 alpha=0.6,
             )
@@ -168,6 +197,7 @@ def viz_exp3_contamination():
             label="With Validator (Avg)",
             color="#1A5276",
             linewidth=2.5,
+            linestyle="--",
         )
 
     plt.xlabel("Time (t)")
