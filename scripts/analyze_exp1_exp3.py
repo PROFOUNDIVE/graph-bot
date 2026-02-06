@@ -71,6 +71,50 @@ def analyze_exp1():
     plt.title("EXP1: Cost Efficiency")
     plt.legend()
     plt.grid(True)
+
+    # Add baseline reference lines for IO/CoT (retry=3)
+    # From outputs/week7_midweek_report.md:
+    # - IO (retry=3): accuracy=17.35%, cost/run=$0.00915, N=98 -> 17 solved @ $0.00915
+    # - CoT (retry=3): accuracy=16.33%, cost/run=$0.02544, N=98 -> 16 solved @ $0.02544
+    IO_SOLVED = 98 * 0.1735
+    IO_COST = 0.00915
+    COT_SOLVED = 98 * 0.1633
+    COT_COST = 0.02544
+
+    plt.axhline(
+        y=IO_SOLVED,
+        color="#E74C3C",
+        linestyle=":",
+        linewidth=2,
+        label=f"IO (retry=3): {IO_SOLVED:.0f} solved @ ${IO_COST:.4f}",
+    )
+    plt.axvline(
+        x=IO_COST,
+        color="#E74C3C",
+        linestyle=":",
+        linewidth=1,
+        alpha=0.5,
+    )
+    plt.scatter([IO_COST], [IO_SOLVED], color="#E74C3C", s=80, zorder=5, marker="x")
+
+    plt.axhline(
+        y=COT_SOLVED,
+        color="#F39C12",
+        linestyle=":",
+        linewidth=2,
+        label=f"CoT (retry=3): {COT_SOLVED:.0f} solved @ ${COT_COST:.4f}",
+    )
+    plt.axvline(
+        x=COT_COST,
+        color="#F39C12",
+        linestyle=":",
+        linewidth=1,
+        alpha=0.5,
+    )
+    plt.scatter([COT_COST], [COT_SOLVED], color="#F39C12", s=80, zorder=5, marker="x")
+
+    plt.legend(loc="lower right")
+
     os.makedirs("outputs/figures", exist_ok=True)
     plt.savefig("outputs/figures/exp1_cost_vs_solved.png")
     print("Saved outputs/figures/exp1_cost_vs_solved.png")
