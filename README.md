@@ -218,22 +218,24 @@ Notable settings:
 - **Edge Stats**: Selection now considers edge-level weights and transition probabilities.
 - **Boundary-Only Packing**: Optimized prompt construction that packs only the most relevant graph boundaries to stay within context limits.
 
-## Week 4 Research Notes (Summary)
+## Week 7 Research Notes (Summary)
 
-Baseline results (Game of 24, 98 problems, `gpt-4o-mini`):
+**Status:** G2 Prototype (v0.3) Complete. Focus on "Continual Stream Amortized Efficiency + Stability".
 
-| Method | Accuracy | Tokens/problem (approx) | Latency/problem | Notes |
-| --- | --- | --- | --- | --- |
-| io prompting | 8.16% | 157.95 | 1.07s | single-query |
-| CoT | 11.67% | 500.61 | 3.05s | single-query |
-| ToT (oracle) | 40.80% | 6,160.32 | 11.02s | multi-query |
-| GoT (oracle) | 69.40% | 10,256.99 | 25.04s | multi-query |
-| BoT (text-only) | 7.14% | 2,475.77 | 16.52s | MetaBuffer noise |
-| BoT (code-aug) | 41.84% | 3,385.20 | 151.13s | exec/repair loop |
+### Key Findings (v0.3)
 
-Key observations:
+| Experiment | Status | Key Observation |
+| --- | --- | --- |
+| **EXP1 (Amortization)** | Analysis | Demonstrated efficiency gains; `cost_per_solved` decreases as MetaGraph matures. |
+| **EXP2 (Warm-start)** | Active | Seeding with 10 successful traces improves initial solve rate (19 -> 24 solved). |
+| **EXP3 (Contamination)** | Analysis | Validator is critical. Without it, contamination hits ~91% and performance collapses. |
+| **EXP4 (Memory Growth)** | Active | Testing long-run stability (N=300+) to monitor OOM and retrieval latency. |
 
-- Text-only BoT underperforms due to missing validator and buffer pollution.
-- Code-augmented BoT improves accuracy but adds large latency from exec/repair.
-- Retrieval quality is critical: noisy templates dominate without validation.
-- Token/cost accounting must include both pipeline calls and RAG components.
+### Current Limitations & Future Work
+
+1.  **Retrieval Quality**: Currently uses Jaccard (token overlap). Dense embedding integration is planned.
+2.  **Edge Creation**: Edges only form on retrieval hits. Cold-start creates isolated nodes.
+3.  **Domain Extension**:
+    *   **LLM-based Distillation**: To generalize beyond Game24.
+    *   **Weak Validator / LLM-Judge**: For domains without cheap oracles.
+    *   **Code-augmented Execution**: To match BoT (Code-aug) performance.
