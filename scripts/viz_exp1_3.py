@@ -33,25 +33,58 @@ def viz_exp1_amortization():
         return
 
     plt.figure(figsize=(10, 6))
-    for run_src in df["run_source"].unique():
+
+    run_sources = sorted(df["run_source"].unique())
+    run_colors = ["#7FB3D5", "#5499C7", "#2E86C1"]
+
+    for i, run_src in enumerate(run_sources):
         subset = (
             cast(pd.DataFrame, df.loc[df["run_source"] == run_src])
             .set_index("t")
             .sort_index()
             .reset_index()
         )
-        plt.plot(subset["t"], subset["cost_per_solved"], label=run_src, alpha=0.5)
+        color = run_colors[i % len(run_colors)]
+        plt.plot(
+            subset["t"],
+            subset["cost_per_solved"],
+            label=run_src,
+            color=color,
+            alpha=0.6,
+        )
 
-    if len(df["run_source"].unique()) > 1:
+    if len(run_sources) > 1:
         avg_df = df.groupby("t")["cost_per_solved"].mean().reset_index()
         plt.plot(
             avg_df["t"],
             avg_df["cost_per_solved"],
-            label="Average",
-            color="black",
-            linewidth=2,
+            label="graph-bot: avg. of 3 runs",
+            color="#1A5276",
+            linewidth=2.5,
             linestyle="--",
         )
+
+    # Baseline reference lines (cost per solved for fair comparison)
+    # From outputs/week7_midweek_report.md (retry=3 to match EXP1 retry budget):
+    # - IO (retry=3): accuracy=17.35%, cost/problem=$0.00009 -> cost/solved=$0.00052
+    # - CoT (retry=3): accuracy=16.33%, cost/problem=$0.00026 -> cost/solved=$0.00159
+    IO_COST_PER_SOLVED = 0.00009 / 0.1735
+    COT_COST_PER_SOLVED = 0.00026 / 0.1633
+
+    plt.axhline(
+        y=IO_COST_PER_SOLVED,
+        color="#E74C3C",
+        linestyle=":",
+        linewidth=2,
+        label=f"IO (retry=3; 2 runs): ${IO_COST_PER_SOLVED:.5f}",
+    )
+    plt.axhline(
+        y=COT_COST_PER_SOLVED,
+        color="#008000",
+        linestyle=":",
+        linewidth=2,
+        label=f"CoT (retry=3; 2 runs): ${COT_COST_PER_SOLVED:.5f}",
+    )
 
     plt.xlabel("Problem Index (t)")
     plt.ylabel("Cost per Solved ($)")
@@ -75,20 +108,25 @@ def viz_exp3_contamination():
         return
 
     plt.figure(figsize=(10, 6))
-    for run_src in df_noval["run_source"].unique():
+
+    noval_sources = sorted(df_noval["run_source"].unique())
+    noval_colors = ["#F1948A", "#E74C3C", "#B03A2E"]
+
+    for i, run_src in enumerate(noval_sources):
         subset = (
             cast(pd.DataFrame, df_noval.loc[df_noval["run_source"] == run_src])
             .set_index("t")
             .sort_index()
             .reset_index()
         )
+        color = noval_colors[i % len(noval_colors)]
         plt.plot(
             subset["t"],
             subset["contamination_rate"],
             label=f"No-Val: {run_src}",
             linestyle="--",
-            color="red",
-            alpha=0.5,
+            color=color,
+            alpha=0.6,
         )
 
     avg_noval = df_noval.groupby("t")["contamination_rate"].mean().reset_index()
@@ -96,19 +134,40 @@ def viz_exp3_contamination():
         avg_noval["t"],
         avg_noval["contamination_rate"],
         label="No-Val (Avg)",
-        color="red",
-        linewidth=2,
+        color="#922B21",
+        linewidth=2.5,
     )
 
     if not df_val.empty:
         df_val["contamination_rate"] = df_val["contamination_rate"].fillna(0)
+
+        val_sources = sorted(df_val["run_source"].unique())
+        val_colors = ["#85C1E9", "#5DADE2", "#2E86C1"]
+
+        for i, run_src in enumerate(val_sources):
+            subset = (
+                cast(pd.DataFrame, df_val.loc[df_val["run_source"] == run_src])
+                .set_index("t")
+                .sort_index()
+                .reset_index()
+            )
+            color = val_colors[i % len(val_colors)]
+            plt.plot(
+                subset["t"],
+                subset["contamination_rate"],
+                label=f"With-Val: {run_src}",
+                linestyle="--",
+                color=color,
+                alpha=0.6,
+            )
+
         avg_val = df_val.groupby("t")["contamination_rate"].mean().reset_index()
         plt.plot(
             avg_val["t"],
             avg_val["contamination_rate"],
             label="With Validator (Avg)",
-            color="blue",
-            linewidth=2,
+            color="#1A5276",
+            linewidth=2.5,
         )
 
     plt.xlabel("Time (t)")
