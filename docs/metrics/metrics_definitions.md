@@ -22,7 +22,52 @@ This document defines the metrics used in Graph-Bot experiments and logging.
 - **`edges_added_count`** (v0.3): Number of new reasoning edges created during the insertion of a new reasoning tree into the MetaGraph.
 - **`memory_n_nodes`**: Total number of nodes in the MetaGraph.
 - **`memory_n_edges`**: Total number of edges in the MetaGraph.
-- **`contamination_rate`**: The proportion of retrieved reasoning steps that match the ground truth or previous successful traces for the current problem.
+
+### Implementation Details: Edge Creation
+
+**Current Behavior** (see `src/graph_bot/pipelines/stream_loop.py`):
+
+Edges are only created when `retrieval.paths` is non-empty:
+
+```python
+edges = []
+if retrieval and retrieval.paths:
+    for path in retrieval.paths:
+        edges.append(ReasoningEdge(src=source_id, dst=new_node, ...))
+```
+
+**Consequence**: If retrieval consistently misses (e.g., empty MetaGraph or embedding mismatch), nodes accumulate but edges remain at 0. This was observed in EXP4 where `memory_n_edges=0` despite `memory_n_nodes` growing to 31.
+
+**Known Issue**:
+- Cold-start scenarios produce isolated nodes with no inter-node connections.
+- Graph structure benefits (path-based retrieval) are not realized until retrieval starts hitting.
+
+**Future Work**:
+- Consider fallback edge creation strategies (e.g., semantic similarity edges between new nodes).
+- Bootstrap edges during warm-start seeding phase.
+
+- **`contamination_rate`**: The proportion of retrieved nodes where `validator_passed=False`.
+
+### Implementation Details: `contamination_rate`
+
+**Current Calculation** (see `src/graph_bot/pipelines/stream_loop.py`):
+
+```
+contamination_rate = contaminated_nodes / reuse_count
+```
+
+Where:
+- `reuse_count`: Total number of nodes retrieved from MetaGraph paths.
+- `contaminated_nodes`: Count of retrieved nodes with `quality.validator_passed == False`.
+
+**Limitations**:
+- Measures only **retrieval-time** contamination; does not track contamination at insertion time.
+- Validator prevents **new** bad insertions but does not remove **existing** contaminated nodes.
+- High steady-state contamination (~75-82%) observed even with validator enabled.
+
+**Future Work**:
+- Memory pruning mechanism to remove low-quality nodes over time.
+- Decay-based quality scoring for older nodes.
 
 ## 4) Accuracy & Performance
 
