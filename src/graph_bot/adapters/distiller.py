@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import re
-from typing import List
+from typing import Any, List, Dict
 
 from ..datatypes import ReasoningNode, ReasoningTree
 from ..interfaces import AbstractDistiller
+from ..logsetting import logger
+from ..settings import settings
 
 
 class GraphRAGDistiller(AbstractDistiller):
@@ -52,6 +55,124 @@ class GraphRAGDistiller(AbstractDistiller):
         ]
 
 
+class LLMDistiller(AbstractDistiller):
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or settings.llm_model
+        self._fallback_distiller = GraphRAGDistiller()
+
+    def distill_query(self, query: str) -> str:
+        normalized_query = _normalize_whitespace(query)
+        if not normalized_query:
+            return query
+
+        # Budget-aware cold-start guard:
+        # Skip LLM query distillation when the input is still a short raw puzzle.
+        if _is_cold_start_query(normalized_query):
+            return self._fallback_distiller.distill_query(normalized_query)
+
+        system_prompt = (
+            "You normalize user queries for retrieval. "
+            "Return exactly one concise normalized query sentence."
+        )
+        user_prompt = (
+            "Rewrite the query to a concise retrieval-friendly form. "
+            "Preserve intent and constraints.\n"
+            f"Query: {normalized_query}"
+        )
+        distilled_query = self._chat(system=system_prompt, user=user_prompt)
+        if not distilled_query:
+            return self._fallback_distiller.distill_query(normalized_query)
+
+        normalized_distilled_query = _normalize_whitespace(distilled_query)
+        if not normalized_distilled_query:
+            return self._fallback_distiller.distill_query(normalized_query)
+        return normalized_distilled_query
+
+    def distill_trace(self, tree: ReasoningTree) -> List[ReasoningNode]:
+        if not tree.nodes:
+            return []
+
+        answer_text = _extract_answer_text(tree)
+        query = _extract_query(tree) or ""
+        solved = _extract_solved(tree)
+        task = _extract_task(tree)
+
+        fallback_text = _distill_trace_text(answer_text, query)
+
+        system_prompt = (
+            "You distill reasoning traces into reusable templates. "
+            "Return only the distilled template text, no markdown."
+        )
+        user_prompt = (
+            f"Task: {task}\n"
+            f"Query: {query}\n"
+            f"Answer: {answer_text}\n"
+            "Extract a concise, reusable template that preserves core reasoning steps."
+        )
+        distilled_text = self._chat(system=system_prompt, user=user_prompt)
+        if not distilled_text:
+            distilled_text = fallback_text
+        distilled_text = _truncate_template(distilled_text)
+
+        node_id = tree.root_id or tree.nodes[0].node_id or "distilled-template"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        parse_ok = bool(_normalize_whitespace(distilled_text))
+
+        return [
+            ReasoningNode(
+                node_id=node_id,
+                text=distilled_text,
+                type="thought",
+                attributes={
+                    "task": task,
+                    "subtype": "template",
+                    "created_at": now_iso,
+                    "last_used_at": now_iso,
+                    "quality": {
+                        "validator_passed": solved,
+                        "parse_ok": parse_ok,
+                    },
+                    "stats": {
+                        "n_seen": 0,
+                        "n_used": 0,
+                        "n_success": 0,
+                        "n_fail": 0,
+                        "ema_success": 0.0,
+                        "avg_tokens": 0.0,
+                        "avg_latency_ms": 0.0,
+                        "avg_cost_usd": 0.0,
+                    },
+                    "original_answer": answer_text,
+                },
+            )
+        ]
+
+    def _chat(self, *, system: str, user: str) -> str | None:
+        try:
+            client = self._build_client()
+            response_text, _ = client.chat(system=system, user=user, temperature=0.0)
+        except Exception as exc:
+            logger.warning(f"LLMDistiller call failed: {exc}")
+            return None
+
+        sanitized = _sanitize_llm_output(response_text)
+        return sanitized or None
+
+    def _build_client(self) -> Any:
+        if settings.llm_provider == "mock":
+            from .mock_client import MockLLMClient
+
+            return MockLLMClient(model=self._model)
+
+        from .vllm_openai_client import VLLMOpenAIClient
+
+        return VLLMOpenAIClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=self._model,
+        )
+
+
 def _extract_answer_text(tree: ReasoningTree) -> str:
     for node in tree.nodes:
         if node.node_id == tree.root_id:
@@ -83,6 +204,14 @@ def _extract_solved(tree: ReasoningTree) -> bool:
     return False
 
 
+def _extract_task(tree: ReasoningTree) -> str:
+    if tree.provenance:
+        task = tree.provenance.get("task")
+        if isinstance(task, str) and task:
+            return task
+    return "game24"
+
+
 def _distill_trace_text(answer_text: str, query: str) -> str:
     pattern = re.compile(r"(-?\d+\.?\d*)")
     all_nums = pattern.findall(query)
@@ -107,3 +236,76 @@ def _distill_trace_text(answer_text: str, query: str) -> str:
         template = template[:500] + "..."
 
     return template
+
+
+def _is_cold_start_query(query: str) -> bool:
+    numbers = re.findall(r"(-?\d+\.?\d*)", query)
+    has_alpha = bool(re.search(r"[A-Za-z]", query))
+    token_count = len(query.split())
+    return len(numbers) >= 4 and (not has_alpha or token_count <= 8)
+
+
+def _normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _sanitize_llm_output(text: str) -> str:
+    value = text.strip()
+    if not value:
+        return ""
+
+    if value.startswith("```"):
+        lines = value.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        value = "\n".join(lines).strip()
+
+    prefixes = ("normalized query:", "query:", "template:", "distilled:")
+    lowered = value.lower()
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            value = value[len(prefix) :].strip()
+            break
+
+    return value
+
+
+def _truncate_template(text: str) -> str:
+    if len(text) > 500:
+        return text[:500] + "..."
+    return text
+
+
+class NullDistiller(AbstractDistiller):
+    """A no-op distiller used when distiller-mode is set to 'none'."""
+
+    def distill_query(self, query: str) -> str:
+        return query
+
+    def distill_trace(self, tree: ReasoningTree) -> List[ReasoningNode]:
+        # No distillation; return empty list
+        return []
+
+
+_DISTILLER_REGISTRY: Dict[str, type[AbstractDistiller]] = {
+    "graphrag": GraphRAGDistiller,
+    "llm": LLMDistiller,
+    "none": NullDistiller,
+}
+
+
+def get_distiller(mode: str) -> AbstractDistiller:
+    """Factory function to instantiate a distiller by mode.
+
+    Args:
+        mode: Distiller mode. One of: graphrag, llm, none
+
+    Returns:
+        An instance of a class implementing AbstractDistiller
+    """
+    distiller_class = _DISTILLER_REGISTRY.get(mode)
+    if distiller_class is None:
+        raise ValueError(f"Unknown distiller mode: {mode}")
+    return distiller_class()
