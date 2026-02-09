@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+import datetime
 import operator
+import re
+import time
+import uuid
 from abc import abstractmethod
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from ..datatypes import ReasoningNode
 from ..interfaces import AbstractValidator
@@ -250,11 +254,292 @@ class ExecRepairValidator(BaseValidator):
 class WeakLLMJudgeValidator(BaseValidator):
     """Weak validator using LLM judgment for domains without ground truth."""
 
+    def __init__(self, model: str | None = None) -> None:
+        from ..settings import settings
+
+        settings_model = (
+            getattr(settings, "validator_model", None) or settings.llm_model
+        )
+        self._model = model or settings_model
+        self._last_failure_reason: str | None = None
+        self._pricing_table: dict[str, Any] | None = None
+
+    def failure_reason(self, answer: str, problem: str) -> str | None:
+        del answer
+        del problem
+        return self._last_failure_reason
+
+    def _load_pricing_table(self) -> dict[str, Any] | None:
+        if self._pricing_table is not None:
+            return self._pricing_table
+
+        try:
+            from ..settings import settings
+            from ..utils.pricing import load_pricing_table
+
+            self._pricing_table = load_pricing_table(settings.pricing_path)
+        except Exception:
+            self._pricing_table = None
+
+        return self._pricing_table
+
+    @staticmethod
+    def _parse_judge_output(text: str) -> tuple[bool | None, str | None]:
+        raw = (text or "").strip()
+        if not raw:
+            return None, None
+
+        first_nonempty_line = None
+        for line in raw.splitlines():
+            if line.strip():
+                first_nonempty_line = line.strip()
+                break
+
+        if first_nonempty_line:
+            m = re.match(r"^(YES|NO)\b", first_nonempty_line, flags=re.IGNORECASE)
+            if m:
+                decision = m.group(1).upper()
+                remainder = first_nonempty_line[m.end() :].strip(" -:\t")
+                reason = remainder or None
+
+                # If reason isn't on the decision line, try to find a Reason: line.
+                if reason is None:
+                    m_reason = re.search(
+                        r"^\s*Reason\s*:\s*(.+)$",
+                        raw,
+                        flags=re.IGNORECASE | re.MULTILINE,
+                    )
+                    if m_reason:
+                        reason = m_reason.group(1).strip() or None
+
+                return decision == "YES", reason
+
+        # Fallback: find first YES/NO occurrence anywhere.
+        m_any = re.search(r"\b(YES|NO)\b", raw, flags=re.IGNORECASE)
+        if not m_any:
+            return None, None
+        decision = m_any.group(1).upper()
+
+        m_reason = re.search(
+            r"\bReason\s*:\s*(.+)$", raw, flags=re.IGNORECASE | re.MULTILINE
+        )
+        reason = m_reason.group(1).strip() if m_reason else None
+        return decision == "YES", reason
+
+    def _maybe_log_token_event(
+        self,
+        *,
+        attributes: dict[str, Any] | None,
+        status: str,
+        latency_ms: float,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cost_usd: float,
+        error_type: str | None,
+    ) -> None:
+        if not attributes:
+            return
+
+        metrics = attributes.get("metrics")
+        if metrics is None:
+            return
+
+        if not hasattr(metrics, "log_token_event"):
+            return
+
+        stream_run_id = attributes.get("stream_run_id") or getattr(
+            metrics, "run_id", None
+        )
+        problem_id = attributes.get("problem_id")
+        t = attributes.get("t")
+        if stream_run_id is None or problem_id is None or t is None:
+            return
+
+        span_id = None
+        if hasattr(metrics, "new_call_id"):
+            try:
+                span_id = metrics.new_call_id()
+            except Exception:
+                span_id = None
+        if span_id is None:
+            span_id = str(uuid.uuid4())
+
+        event: dict[str, Any] = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "stream_run_id": stream_run_id,
+            "problem_id": problem_id,
+            "t": t,
+            "event_type": "llm_completion",
+            "operation": "validate_llm_judge",
+            "status": status,
+            "model": model,
+            "latency_ms": int(round(latency_ms)),
+            "run_id": f"{stream_run_id}:{problem_id}",
+            "span_id": span_id,
+            "component": "evaluator",
+            "metadata": {"pricing_version": "v0", "error_type": error_type},
+            "usage": {
+                "prompt_tokens": int(prompt_tokens),
+                "completion_tokens": int(completion_tokens),
+                "total_tokens": int(total_tokens),
+            },
+            "cost_usd": float(cost_usd),
+        }
+
+        try:
+            metrics.log_token_event(event)
+        except Exception:
+            return
+
     def validate(
         self, node: str | ReasoningNode, problem: str | None = None
     ) -> bool | float:
         """Validate using LLM as judge."""
-        raise NotImplementedError("WeakLLMJudgeValidator not yet implemented")
+        attributes: dict[str, Any] | None = None
+        if isinstance(node, ReasoningNode):
+            attributes = node.attributes
+            problem_str = node.attributes.get("problem") if node.attributes else None
+            if not problem_str:
+                logger.debug(
+                    "Validation failed: missing problem context in node attributes"
+                )
+                self._last_failure_reason = "missing_problem_context"
+                return 0.0
+            answer = node.text
+            problem = problem_str
+        else:
+            answer = node
+            if problem is None:
+                logger.warning(
+                    "Validation failed: problem string is required for legacy validate call"
+                )
+                self._last_failure_reason = "missing_problem_context"
+                return 0.0
+
+        from ..settings import settings
+
+        judge_system = (
+            "You are a strict evaluator.\n"
+            "Given a Problem and a Proposed Answer, decide whether the answer is correct and adequately addresses the problem.\n"
+            "Reply with exactly one of the following formats:\n"
+            "YES\nReason: <short reason>\n"
+            "NO\nReason: <short reason>\n"
+            "Do not output anything else."
+        )
+        judge_user = f"Problem:\n{problem}\n\nProposed Answer:\n{answer}\n"
+
+        # Allow injection for tests / callers.
+        injected_client = attributes.get("llm_client") if attributes else None
+
+        if injected_client is not None:
+            client = injected_client
+        elif settings.llm_provider == "mock":
+            from ..adapters.mock_client import MockLLMClient
+
+            client = MockLLMClient(model=self._model)
+        else:
+            from ..adapters.vllm_openai_client import VLLMOpenAIClient
+
+            client = VLLMOpenAIClient(
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=self._model,
+            )
+
+        start = time.perf_counter()
+        usage = None
+        raw = ""
+        error_type = None
+        try:
+            raw, usage = client.chat(
+                system=judge_system, user=judge_user, temperature=0.0
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+        latency_ms = (time.perf_counter() - start) * 1000.0
+
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+
+        cost_usd = 0.0
+        pricing_table = self._load_pricing_table()
+        if pricing_table is not None:
+            try:
+                from ..utils.pricing import calculate_cost
+
+                cost_usd = float(
+                    calculate_cost(
+                        pricing_table=pricing_table,
+                        model_name=self._model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
+                )
+            except Exception:
+                cost_usd = 0.0
+
+        if error_type is not None:
+            self._last_failure_reason = f"judge_error:{error_type}"
+            self._maybe_log_token_event(
+                attributes=attributes,
+                status="failed",
+                latency_ms=latency_ms,
+                model=self._model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost_usd=cost_usd,
+                error_type=error_type,
+            )
+            return 0.0
+
+        decision, reason = self._parse_judge_output(raw)
+        if decision is None:
+            self._last_failure_reason = "judge_parse_error"
+            self._maybe_log_token_event(
+                attributes=attributes,
+                status="failed",
+                latency_ms=latency_ms,
+                model=self._model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost_usd=cost_usd,
+                error_type="parse_error",
+            )
+            return 0.0
+
+        if decision:
+            self._last_failure_reason = None
+            self._maybe_log_token_event(
+                attributes=attributes,
+                status="success",
+                latency_ms=latency_ms,
+                model=self._model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                cost_usd=cost_usd,
+                error_type=None,
+            )
+            return 1.0
+
+        self._last_failure_reason = (reason or "llm_judge_rejected").strip()
+        self._maybe_log_token_event(
+            attributes=attributes,
+            status="success",
+            latency_ms=latency_ms,
+            model=self._model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=cost_usd,
+            error_type=None,
+        )
+        return 0.0
 
     def get_validator_name(self) -> str:
         return "weak_llm_judge"
@@ -267,7 +552,7 @@ _VALIDATOR_REGISTRY: Dict[str, type[BaseValidator]] = {
 }
 
 
-def get_validator(mode: str) -> BaseValidator:
+def get_validator(mode: str, model: str | None = None) -> BaseValidator:
     """Factory function to get validator instance.
 
     Args:
@@ -279,4 +564,10 @@ def get_validator(mode: str) -> BaseValidator:
     validator_class = _VALIDATOR_REGISTRY.get(mode)
     if validator_class is None:
         raise ValueError(f"Unknown validator mode: {mode}")
+    # Special-case WeakLLMJudgeValidator to allow passing a model explicitly without
+    # triggering type-checker issues for other validators.
+    if mode == "weak_llm_judge":
+        return WeakLLMJudgeValidator(model)
+    # For other validators, rely on default no-arg constructors to preserve
+    # backward compatibility.
     return validator_class()
