@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from ..adapters.distiller import RuleBasedDistiller, get_distiller
+from ..adapters.distiller import get_distiller
 from ..adapters.graphrag import GraphRAGAdapter
 from ..datatypes import (
     PathEvaluation,
