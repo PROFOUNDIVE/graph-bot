@@ -379,7 +379,7 @@ def stream(
     distiller_mode: Optional[str] = typer.Option(
         None,
         "--distiller-mode",
-        help="Distiller mode to use: graphrag, llm, or none",
+        help="Distiller mode to use: rulebased, llm, or none",
     ),
     validator_model: Optional[str] = typer.Option(
         None,

@@ -10,7 +10,7 @@ from ..logsetting import logger
 from ..settings import settings
 
 
-class GraphRAGDistiller(AbstractDistiller):
+class RuleBasedDistiller(AbstractDistiller):
     def distill_query(self, query: str) -> str:
         pattern = re.compile(r"(-?\d+\.?\d*)")
         all_matches = pattern.findall(query)
@@ -58,7 +58,7 @@ class GraphRAGDistiller(AbstractDistiller):
 class LLMDistiller(AbstractDistiller):
     def __init__(self, model: str | None = None) -> None:
         self._model = model or settings.llm_model
-        self._fallback_distiller = GraphRAGDistiller()
+        self._fallback_distiller = RuleBasedDistiller()
 
     def distill_query(self, query: str) -> str:
         normalized_query = _normalize_whitespace(query)
@@ -290,7 +290,7 @@ class NullDistiller(AbstractDistiller):
 
 
 _DISTILLER_REGISTRY: Dict[str, type[AbstractDistiller]] = {
-    "graphrag": GraphRAGDistiller,
+    "rulebased": RuleBasedDistiller,
     "llm": LLMDistiller,
     "none": NullDistiller,
 }
@@ -300,7 +300,7 @@ def get_distiller(mode: str) -> AbstractDistiller:
     """Factory function to instantiate a distiller by mode.
 
     Args:
-        mode: Distiller mode. One of: graphrag, llm, none
+        mode: Distiller mode. One of: rulebased, llm, none
 
     Returns:
         An instance of a class implementing AbstractDistiller

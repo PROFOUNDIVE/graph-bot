@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from ..adapters.distiller import GraphRAGDistiller, get_distiller
+from ..adapters.distiller import RuleBasedDistiller, get_distiller
 from ..adapters.graphrag import GraphRAGAdapter
 from ..datatypes import (
     PathEvaluation,
@@ -98,7 +98,7 @@ def run_continual_stream(
     )
     validator = get_validator(validator_mode, validator_model)
     if distiller is None:
-        actual_mode = (distiller_mode or settings.distiller_mode or "graphrag").lower()
+        actual_mode = (distiller_mode or settings.distiller_mode or "rulebased").lower()
         distiller = get_distiller(actual_mode)
     metrics = StreamMetricsLogger(out_dir=metrics_out_dir, run_id=run_id)
 
