@@ -70,6 +70,37 @@ This produces JSONL logs under `outputs/stream_logs/`:
 graph-bot amortize outputs/stream_logs/run.stream.jsonl --out outputs/amortization_curve.csv
 ```
 
+## v0.4 New Features
+
+### WeakLLMJudgeValidator
+Validation for domains without ground truth (cheap oracle) answers:
+- **LLM-as-Judge**: Uses LLM to evaluate answer correctness with YES/NO output
+- **Configurable Model**: `--validator-model` option to specify judge model
+- **Fail-safe**: Returns 0.0 on timeout/error to prevent false positives
+
+```bash
+graph-bot stream data/problems.jsonl --validator-mode weak_llm_judge --validator-model gpt-4o-mini
+```
+
+### LLMDistiller
+LLM-based query normalization and trace abstraction:
+- **Query Normalization**: Extracts core intent from user queries via LLM
+- **Trace Distillation**: Creates reusable template nodes from successful traces
+- **Cold-start Guard**: Falls back to rule-based for simple numeric queries
+
+```bash
+graph-bot stream data/problems.jsonl --distiller-mode llm
+```
+
+### Distiller Registry
+Factory pattern with three modes:
+- `rulebased` (default): Regex-based extraction for Game24
+- `llm`: LLM-based normalization for arbitrary domains
+- `none`: No-op passthrough
+
+### Naming Clarification
+- `GraphRAGDistiller` → `RuleBasedDistiller` (clarifies it's regex-based, not GraphRAG library)
+
 ## v0.3 New Features
 
 ### Distillation Loop
@@ -168,10 +199,13 @@ Notable settings:
 - `GRAPH_BOT_MAX_PATHS`: max paths to explore during retrieval
 - `GRAPH_BOT_EMA_ALPHA`, `GRAPH_BOT_EMA_TAU_DAYS`: update/pruning parameters
 - `GRAPH_BOT_SLACK_WEBHOOK_URL`: Slack incoming webhook for automated experiment reporting
+- `GRAPH_BOT_VALIDATOR_MODEL`: model for weak_llm_judge validator
+- `GRAPH_BOT_DISTILLER_MODE`: distiller selection (rulebased, llm, none)
 
 ### Adapters (`adapters/`)
 
 - `graphrag.py`: Persistent MetaGraph store + retrieval (semantic + stats)
+- `distiller.py`: Query/trace distillation (RuleBasedDistiller, LLMDistiller, NullDistiller)
 - `vllm_openai_client.py`: OpenAI-compatible client for vLLM
 - `mock_client.py`: Mock client for testing
 
@@ -182,7 +216,7 @@ Notable settings:
 
 ### Evaluation (`eval/`)
 
-- `validators.py`: problem-specific validators (e.g., `Game24Validator`)
+- `validators.py`: Problem validators (`Game24Validator`, `WeakLLMJudgeValidator`, etc.)
 
 ## Design Spec (Summary)
 
@@ -218,24 +252,29 @@ Notable settings:
 - **Edge Stats**: Selection now considers edge-level weights and transition probabilities.
 - **Boundary-Only Packing**: Optimized prompt construction that packs only the most relevant graph boundaries to stay within context limits.
 
-## Week 7 Research Notes (Summary)
+## Week 8 Research Notes (Summary)
 
-**Status:** G2 Prototype (v0.3) Complete. Focus on "Continual Stream Amortized Efficiency + Stability".
+**Status:** v0.4 Released. Focus on "Domain Extension" via LLM-based components.
 
-### Key Findings (v0.3)
+### Key Findings (v0.3 → v0.4)
 
 | Experiment | Status | Key Observation |
 | --- | --- | --- |
-| **EXP1 (Amortization)** | Analysis | Demonstrated efficiency gains; `cost_per_solved` decreases as MetaGraph matures. |
-| **EXP2 (Warm-start)** | Active | Seeding with 10 successful traces improves initial solve rate (19 -> 24 solved). |
-| **EXP3 (Contamination)** | Analysis | Validator is critical. Without it, contamination hits ~91% and performance collapses. |
-| **EXP4 (Memory Growth)** | Active | Testing long-run stability (N=300+) to monitor OOM and retrieval latency. |
+| **EXP1 (Amortization)** | Complete | Demonstrated efficiency gains; `cost_per_solved` decreases as MetaGraph matures. |
+| **EXP2 (Warm-start)** | Complete | Seeding with 10 successful traces improves initial solve rate (19 -> 24 solved). |
+| **EXP3 (Contamination)** | Complete | Validator is critical. Without it, contamination hits ~91% and performance collapses. |
+| **EXP4 (Memory Growth)** | Analysis | Long-run stability (N=300+) verified; OOM analysis pending. |
+| **EXP6 (Domain Extension)** | Planned | LLM judge + LLM distiller now available for non-Game24 domains. |
 
-### Current Limitations & Future Work
+### v0.4 Addresses
+
+| v0.3 Limitation | v0.4 Status |
+| --- | --- |
+| LLM-based Distillation | ✅ Implemented (`LLMDistiller`) |
+| Weak Validator / LLM-Judge | ✅ Implemented (`WeakLLMJudgeValidator`) |
+
+### Remaining Limitations & Future Work
 
 1.  **Retrieval Quality**: Currently uses Jaccard (token overlap). Dense embedding integration is planned.
 2.  **Edge Creation**: Edges only form on retrieval hits. Cold-start creates isolated nodes.
-3.  **Domain Extension**:
-    *   **LLM-based Distillation**: To generalize beyond Game24.
-    *   **Weak Validator / LLM-Judge**: For domains without cheap oracles.
-    *   **Code-augmented Execution**: To match BoT (Code-aug) performance.
+3.  **Code-augmented Execution**: To match BoT (Code-aug) performance.
