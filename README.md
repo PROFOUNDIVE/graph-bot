@@ -227,39 +227,37 @@ Notable settings:
 
 - `validators.py`: Problem validators (`Game24Validator`, `WeakLLMJudgeValidator`, etc.)
 
-## Design Spec (Summary)
+## Design Spec (v0.4.0)
+
+> See [docs/specs/v04_summary.md](docs/specs/v04_summary.md) for architecture details.
 
 ### Pipeline
 
-1. Tree generation (Stream/GoT solver)
-2. Insert into MetaGraph
-3. Retrieve `k` optimal paths and instantiate prompt
-4. Update node/edge stats with validator/scorer feedback
+1. **Distill (Query)**: Input query is normalized (RuleBased or LLM).
+2. **Retrieve**: Semantic Top-K retrieval from MetaGraph (using Jaccard).
+3. **Solve**: LLM solves the problem conditioned on retrieved context.
+4. **Validate**: Validator (Oracle or LLM-Judge) checks the answer.
+5. **Distill (Trace)**: Successful trace is distilled into a template.
+6. **Update**: New template is merged into MetaGraph (validator-gated).
 
 ### Memory Schema
 
-- `ReasoningNode.type`: `thought | action | evidence | answer`
-- **Template nodes**: stored as `type="thought"` and `attributes.subtype="template"`
-- Required attributes
-  - `task`, `created_at`, `last_used_at`
-  - `stats`: `n_seen`, `n_used`, `n_success`, `n_fail`, `ema_success`,
-    `avg_tokens`, `avg_latency_ms`, `avg_cost_usd`
-  - `quality`: `validator_passed`, `parse_ok`
+- **Node Types**: `thought` (template), `action`, `evidence`, `answer`
+- **Template Nodes**: `type="thought"`, `subtype="template"`
+- **Attributes**: `task`, `stats` (n_used, n_success, ema_success), `quality` (validator_passed)
 
-### Merge & Update Rules
+### Update Rules (EMA)
 
-- Dedup key: `hash(normalize(text))`
-- EMA update: `ema_success = (1-α)*ema_success + α*success`
-- Decay: `ema_success *= exp(-Δt/τ)` when unused
-- Pruning heuristic: if `n_seen >= 5` and `ema_success < 0.2`
-- Defaults: `α=0.1`, `τ=7 days`, `N_min=5`, `p_min=0.2`
+- **Dedup Key**: `hash(normalize(text))`
+- **Update**: `ema_success = (1-α)*ema_success + α*success`
+- **Decay**: `ema_success *= exp(-Δt/τ)` when unused
+- **Pruning**: Candidate for removal if `n_seen >= 5` and `ema_success < 0.2`
 
-### Retrieval & Selection Policy
+### Retrieval Policy
 
-- **Stage A: Semantic Top-K**: Retrieval using embedding or lexical similarity.
-- **Stage B: Stats Rerank**: Ranking by `ema_success`, `avg_cost`, and path length.
-- **Edge Stats**: Selection now considers edge-level weights and transition probabilities.
-- **Boundary-Only Packing**: Optimized prompt construction that packs only the most relevant graph boundaries to stay within context limits.
+- **Stage A (Candidate)**: Jaccard similarity (token overlap)
+- **Stage B (Rerank)**: Combined score of semantic + EMA success + edge weights
+- **Edge Traversal**: Prioritizes paths connected by high-probability edges
 
 ## Week 8 Research Notes (Summary)
 
