@@ -1,14 +1,23 @@
-# graph-bot
+# Graph-BoT: Graph-augmented Buffer of Thoughts
 
-Graph-augmented Buffer of Thoughts (Graph-BoT).
+Research prototype for **Non-parametric Continual Learning** using persistent reasoning graphs.
 
-This repository implements a **Graph-augmented Buffer of Thoughts**. The goal
-is to compare episodic reasoning (ToT/GoT) with a persistent MetaGraph-based
-memory for reuse and better long-horizon performance.
+> **Status:** v0.4.0 (Active Research)
+> **Paper:** Graph-BoT: Amortizing Reasoning Costs via Persistent Memory (Work in Progress)
 
-Many parts are still **placeholders (stubs)**, but the system supports a
-continual stream of problems, accumulating successful reasoning paths into a
-persistent MetaGraph.
+## Overview
+
+Graph-BoT extends **Buffer of Thoughts (BoT)** by structuring reasoning templates into a persistent **MetaGraph**. It aims to solve the "Amortized System 2" problem:
+
+> *Can we amortize the cost of expensive reasoning (CoT/ToT) by accumulating and reusing successful thought structures over time?*
+
+### Key Features
+- **Persistent MetaGraph**: Stores distilled reasoning templates (nodes) and their causal relationships (edges).
+- **Continual Stream Pipeline**: Online learning loop where every solved problem updates the memory.
+- **Amortized Efficiency**: Costs decrease over time as retrieval replaces generation.
+- **Stability Mechanisms**: Validator-gated updates prevent memory contamination.
+
+---
 
 ## Quickstart
 
