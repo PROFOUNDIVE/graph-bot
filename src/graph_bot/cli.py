@@ -376,6 +376,16 @@ def stream(
         "--validator-mode",
         help="Validator mode: oracle, exec_repair, weak_llm_judge",
     ),
+    distiller_mode: Optional[str] = typer.Option(
+        None,
+        "--distiller-mode",
+        help="Distiller mode to use: graphrag, llm, or none",
+    ),
+    validator_model: Optional[str] = typer.Option(
+        None,
+        "--validator-model",
+        help="Validator model to use for WeakLLMJudge (env GRAPH_BOT_VALIDATOR_MODEL if unset)",
+    ),
     max_problems: Optional[int] = typer.Option(
         None, "--max-problems", help="Optional limit on number of problems"
     ),
@@ -392,12 +402,18 @@ def stream(
     ),
 ):
     """Run continual stream loop for Game of 24."""
+    # Resolve final validator model: CLI arg takes precedence, else settings
+    final_validator_model = validator_model or getattr(
+        settings, "validator_model", None
+    )
     run_continual_stream(
         problems_file=problems_file,
         mode=mode,
         use_edges=use_edges,
         policy_id=policy_id,
-        validator_mode=validator_mode or settings.validator_mode,
+        validator_mode=validator_mode or getattr(settings, "validator_mode", "oracle"),
+        validator_model=final_validator_model,
+        distiller_mode=distiller_mode,
         validator_gated_update=validator_gated_update,
         max_problems=max_problems,
         run_id=run_id,

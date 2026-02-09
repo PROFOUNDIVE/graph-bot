@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
-from ..adapters.distiller import GraphRAGDistiller
+from ..adapters.distiller import GraphRAGDistiller, get_distiller
 from ..adapters.graphrag import GraphRAGAdapter
 from ..datatypes import (
     PathEvaluation,
@@ -74,8 +74,10 @@ def run_continual_stream(
     use_edges: bool | None = None,
     policy_id: str | None = None,
     validator_mode: str = "oracle",
+    validator_model: str | None = None,
     validator_gated_update: bool = True,
     distiller: AbstractDistiller | None = None,
+    distiller_mode: str | None = None,
     max_problems: int | None = None,
     metrics_out_dir: Path = Path("outputs/stream_logs"),
     run_id: str = "run",
@@ -94,9 +96,10 @@ def run_continual_stream(
         use_edges=use_edges,
         policy_id=policy_id,
     )
-    validator = get_validator(validator_mode)
+    validator = get_validator(validator_mode, validator_model)
     if distiller is None:
-        distiller = GraphRAGDistiller()
+        actual_mode = (distiller_mode or settings.distiller_mode or "graphrag").lower()
+        distiller = get_distiller(actual_mode)
     metrics = StreamMetricsLogger(out_dir=metrics_out_dir, run_id=run_id)
 
     # Manifest Integration
@@ -1072,6 +1075,10 @@ Input: {input}
             validate_error_type = "skipped_precheck"
         else:
             validate_error_type = None
+        validator_name = validator.get_validator_name()
+        validate_operation = (
+            "validate_llm_judge" if validator_name == "weak_llm_judge" else "validate"
+        )
 
         metrics.log_call(
             StreamCallMetrics(
@@ -1101,9 +1108,9 @@ Input: {input}
                 "problem_id": problem_id,
                 "t": t,
                 "event_type": "tool_call",
-                "operation": "validate",
+                "operation": validate_operation,
                 "status": "failed" if validate_error_type else "success",
-                "model": settings.validator_mode,
+                "model": validator_name,
                 "latency_ms": int(round(latency_val_ms)),
                 "run_id": f"{metrics.run_id}:{problem_id}",
                 "span_id": call_id_validate,

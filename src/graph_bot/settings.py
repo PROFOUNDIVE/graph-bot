@@ -60,6 +60,16 @@ class AppSettings(BaseSettings):
         default="oracle",
         description="Validator mode: oracle, exec_repair, or weak_llm_judge",
     )
+    validator_model: str | None = Field(
+        default=None,
+        description="Validator model to use for weak_llm_judge (optional; overrides llm model if set)",
+    )
+
+    # Distiller mode for stream distillation (graphrag, llm, none)
+    distiller_mode: str = Field(
+        default="graphrag",
+        description="Distiller mode: graphrag, llm, or none",
+    )
 
     execution_timeout_sec: float = Field(
         default=60.0,
