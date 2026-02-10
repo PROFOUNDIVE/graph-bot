@@ -69,16 +69,29 @@ def test_game24_validator_failure_reason():
 
 class _StubJudgeClient:
     def __init__(
-        self, response_text: str = "YES", exc: Exception | None = None
+        self,
+        response_text: str = "YES",
+        exc: Exception | None = None,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
     ) -> None:
         self._response_text = response_text
         self._exc = exc
+        self._prompt_tokens = prompt_tokens
+        self._completion_tokens = completion_tokens
+        self._total_tokens = total_tokens
 
     def chat(self, system: str, user: str, temperature: float):
         del system, user, temperature
         if self._exc is not None:
             raise self._exc
-        usage = SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+        usage = SimpleNamespace(
+            prompt_tokens=self._prompt_tokens,
+            completion_tokens=self._completion_tokens,
+            total_tokens=self._total_tokens,
+        )
         return self._response_text, usage
 
 
@@ -89,6 +102,84 @@ def _make_judge_node(answer: str, client: _StubJudgeClient) -> ReasoningNode:
         type="answer",
         attributes={"problem": "2 4 6 8 -> 24", "llm_client": client},
     )
+
+
+def test_llm_judge_validator_parse_error_sets_failure_reason():
+    validator = WeakLLMJudgeValidator(model="mock-model")
+    node = _make_judge_node(
+        "(8 * 6) / (4 - 2)",
+        _StubJudgeClient(response_text="MAYBE\nReason: uncertain"),
+    )
+
+    assert validator.validate(node) == 0.0
+    assert validator.failure_reason(node.text, "2 4 6 8 -> 24") == "judge_parse_error"
+
+
+def test_llm_judge_validator_fallback_yes_no_parse_from_body_text():
+    validator = WeakLLMJudgeValidator(model="mock-model")
+    node = _make_judge_node(
+        "2 + 4 + 6 + 8",
+        _StubJudgeClient(
+            response_text="The correct decision is NO.\nReason: arithmetic is wrong"
+        ),
+    )
+
+    assert validator.validate(node) == 0.0
+    assert validator.failure_reason(node.text, "2 4 6 8 -> 24") == "arithmetic is wrong"
+
+
+def test_llm_judge_validator_no_reason_defaults_to_llm_judge_rejected():
+    validator = WeakLLMJudgeValidator(model="mock-model")
+    node = _make_judge_node("2 + 4 + 6 + 8", _StubJudgeClient(response_text="NO"))
+
+    assert validator.validate(node) == 0.0
+    assert validator.failure_reason(node.text, "2 4 6 8 -> 24") == "llm_judge_rejected"
+
+
+def test_llm_judge_validator_logs_token_event_when_metrics_present(monkeypatch):
+    class _Metrics:
+        def __init__(self) -> None:
+            self.events: list[dict] = []
+            self.run_id = "test_metrics_run"
+
+        def log_token_event(self, event: dict) -> None:
+            self.events.append(event)
+
+        def new_call_id(self) -> str:
+            return "call-1"
+
+    metrics = _Metrics()
+    validator = WeakLLMJudgeValidator(model="mock-model")
+    monkeypatch.setattr(validator, "_load_pricing_table", lambda: None)
+
+    client = _StubJudgeClient(
+        response_text="YES\nReason: correct",
+        prompt_tokens=12,
+        completion_tokens=34,
+        total_tokens=46,
+    )
+    node = ReasoningNode(
+        node_id="n1",
+        text="(8 * 6) / (4 - 2)",
+        type="answer",
+        attributes={
+            "problem": "2 4 6 8 -> 24",
+            "llm_client": client,
+            "metrics": metrics,
+            "stream_run_id": "test_stream_run",
+            "problem_id": "p1",
+            "t": 1,
+        },
+    )
+
+    assert validator.validate(node) == 1.0
+    assert len(metrics.events) == 1
+    event = metrics.events[0]
+    assert event["operation"] == "validate_llm_judge"
+    assert event["status"] == "success"
+    assert event["usage"]["prompt_tokens"] == 12
+    assert event["usage"]["completion_tokens"] == 34
+    assert event["usage"]["total_tokens"] == 46
 
 
 def test_llm_judge_validator_correct_answer():
