@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Analyze baseline repeat logs (IO vs CoT) for variance and uncertainty.
 
 Generates quantitative report with:
@@ -7,6 +5,8 @@ Generates quantitative report with:
 - Aggregated statistics with 95% CI (IO: n=5, CoT: n=1 with caveat)
 - IO-CoT difference with caveat about asymmetric samples
 """
+
+from __future__ import annotations
 
 import argparse
 import json
