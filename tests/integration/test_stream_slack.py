@@ -29,7 +29,7 @@ def test_run_stream_sends_slack_success(tmp_path, monkeypatch):
             mode="io",
             max_problems=1,
             metrics_out_dir=metrics_dir,
-            run_id="test-slack-success",
+            run_id="test_slack_success",
         )
 
         mock_send.assert_called_once()
@@ -71,7 +71,7 @@ def test_run_stream_sends_slack_failure(tmp_path, monkeypatch):
                 mode="io",
                 max_problems=1,
                 metrics_out_dir=metrics_dir,
-                run_id="test-slack-failure",
+                run_id="test_slack_failure",
             )
 
         mock_send.assert_called_once()

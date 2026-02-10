@@ -48,17 +48,17 @@ def test_run_continual_stream_baseline_io(tmp_path, monkeypatch):
         mode="io",
         max_problems=1,
         metrics_out_dir=metrics_dir,
-        run_id="test-io",
+        run_id="test_io",
     )
 
     assert len(results) == 1
     assert results[0]["problem_id"] == "q1"
     assert results[0]["solved"] is True
 
-    assert (metrics_dir / "test-io.calls.jsonl").exists()
-    assert (metrics_dir / "test-io.problems.jsonl").exists()
-    assert (metrics_dir / "test-io.stream.jsonl").exists()
-    assert (metrics_dir / "test-io.token_events.jsonl").exists()
+    assert (metrics_dir / "test_io.calls.jsonl").exists()
+    assert (metrics_dir / "test_io.problems.jsonl").exists()
+    assert (metrics_dir / "test_io.stream.jsonl").exists()
+    assert (metrics_dir / "test_io.token_events.jsonl").exists()
 
 
 def test_run_continual_stream_graph_bot_mode(tmp_path, monkeypatch):
@@ -81,7 +81,7 @@ def test_run_continual_stream_graph_bot_mode(tmp_path, monkeypatch):
         mode="graph_bot",
         max_problems=1,
         metrics_out_dir=metrics_dir,
-        run_id="run1",
+        run_id="test_run1",
     )
 
     results = run_continual_stream(
@@ -89,11 +89,11 @@ def test_run_continual_stream_graph_bot_mode(tmp_path, monkeypatch):
         mode="graph_bot",
         max_problems=1,
         metrics_out_dir=metrics_dir,
-        run_id="run2",
+        run_id="test_run2",
     )
 
     assert len(results) == 1
     reuse_count = results[0]["reuse_count"]
     assert isinstance(reuse_count, int)
     assert reuse_count >= 1
-    assert (metrics_dir / "run2.stream.jsonl").exists()
+    assert (metrics_dir / "test_run2.stream.jsonl").exists()

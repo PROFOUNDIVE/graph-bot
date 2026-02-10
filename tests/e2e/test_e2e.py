@@ -61,12 +61,12 @@ def test_stream_and_amortize_cli(tmp_path, mock_settings, monkeypatch):
             "--metrics-out-dir",
             str(metrics_dir),
             "--run-id",
-            "test-run",
+            "test_e2e_run",
         ],
     )
     assert result.exit_code == 0
 
-    stream_path = metrics_dir / "test-run.stream.jsonl"
+    stream_path = metrics_dir / "test_e2e_run.stream.jsonl"
     assert stream_path.exists()
 
     out_csv = tmp_path / "amortization.csv"

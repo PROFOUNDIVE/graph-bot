@@ -109,12 +109,12 @@ def test_stream_contract_and_schema():
             run_continual_stream(
                 problems_file=problems_file,
                 metrics_out_dir=metrics_dir,
-                run_id="contract",
+                run_id="test_contract",
                 max_problems=2,
             )
 
-        calls_file = metrics_dir / "contract.calls.jsonl"
-        token_events_file = metrics_dir / "contract.token_events.jsonl"
+        calls_file = metrics_dir / "test_contract.calls.jsonl"
+        token_events_file = metrics_dir / "test_contract.token_events.jsonl"
         assert calls_file.exists()
         assert token_events_file.exists()
 
