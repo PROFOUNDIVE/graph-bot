@@ -358,7 +358,21 @@ def trees_insert(
 @app.command("stream")
 def stream(
     problems_file: Path = typer.Argument(
-        ..., help="JSONL file of Game24 problems: {id, numbers, target?}"
+        ...,
+        help=(
+            "JSONL problems file by task: "
+            "game24={id,numbers,target?}; "
+            "wordsorting={id,input,target}; "
+            "mgsm={id?,question,answer,language?,metadata?}"
+        ),
+    ),
+    task: str = typer.Option(
+        "game24", "--task", help="Task name: game24, wordsorting, mgsm"
+    ),
+    cross_task_retrieval: bool = typer.Option(
+        False,
+        "--cross-task-retrieval/--no-cross-task-retrieval",
+        help="Allow retrieval across task boundaries (default: task-scoped retrieval).",
     ),
     mode: Optional[str] = typer.Option(
         None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
@@ -401,13 +415,15 @@ def stream(
         help="If True, only insert solved problems into MetaGraph.",
     ),
 ):
-    """Run continual stream loop for Game of 24."""
+    """Run continual stream loop for a selected task."""
     # Resolve final validator model: CLI arg takes precedence, else settings
     final_validator_model = validator_model or getattr(
         settings, "validator_model", None
     )
     run_continual_stream(
         problems_file=problems_file,
+        task=task,
+        cross_task_retrieval=cross_task_retrieval,
         mode=mode,
         use_edges=use_edges,
         policy_id=policy_id,
