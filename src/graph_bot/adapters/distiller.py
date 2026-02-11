@@ -37,8 +37,16 @@ class RuleBasedDistiller(AbstractDistiller):
         query = _extract_query(tree)
         if query is None:
             query = ""
+        task = _extract_task(tree)
+        steps_summary = _extract_steps_summary(tree)
+        final_candidate = _extract_final_candidate(tree, answer_text)
 
-        distilled_text = _distill_trace_text(answer_text, query)
+        distilled_text = _distill_trace_text(
+            task=task,
+            query=query,
+            steps_summary=steps_summary,
+            final_candidate=final_candidate,
+        )
         solved = _extract_solved(tree)
 
         return [
@@ -96,22 +104,47 @@ class LLMDistiller(AbstractDistiller):
         query = _extract_query(tree) or ""
         solved = _extract_solved(tree)
         task = _extract_task(tree)
+        steps_summary = _extract_steps_summary(tree)
+        final_candidate = _extract_final_candidate(tree, answer_text)
+        distill_input = _extract_distill_input(
+            tree,
+            task=task,
+            query=query,
+            steps_summary=steps_summary,
+            final_candidate=final_candidate,
+        )
 
-        fallback_text = _distill_trace_text(answer_text, query)
+        fallback_text = _distill_trace_text(
+            task=task,
+            query=query,
+            steps_summary=steps_summary,
+            final_candidate=final_candidate,
+        )
 
         system_prompt = (
-            "You distill reasoning traces into reusable templates. "
-            "Return only the distilled template text, no markdown."
+            "You distill reasoning traces into BoT-style reusable thought templates. "
+            "Use only the provided summarized input and do not emit raw chain-of-thought. "
+            "Return plain text with this exact skeleton:\n"
+            "Task: <task>\n"
+            "Thought Template:\n"
+            "1. <step>\n"
+            "2. <step>\n"
+            "Applicability:\n"
+            "- <when this template applies>\n"
+            "Answer Schema:\n"
+            "- Final Candidate: <value or format>."
         )
         user_prompt = (
             f"Task: {task}\n"
-            f"Query: {query}\n"
-            f"Answer: {answer_text}\n"
-            "Extract a concise, reusable template that preserves core reasoning steps."
+            "Distillation Input:\n"
+            f"{distill_input}\n\n"
+            "Return template-only output that is structured and reusable across similar "
+            "problems in the same task."
         )
         distilled_text = self._chat(system=system_prompt, user=user_prompt)
         if not distilled_text:
             distilled_text = fallback_text
+        distilled_text = _ensure_task_prefixed_template(task=task, text=distilled_text)
         distilled_text = _truncate_template(distilled_text)
 
         node_id = tree.root_id or tree.nodes[0].node_id or "distilled-template"
@@ -143,6 +176,8 @@ class LLMDistiller(AbstractDistiller):
                         "avg_cost_usd": 0.0,
                     },
                     "original_answer": answer_text,
+                    "steps_summary": steps_summary,
+                    "final_candidate": final_candidate,
                 },
             )
         ]
@@ -212,30 +247,118 @@ def _extract_task(tree: ReasoningTree) -> str:
     return "game24"
 
 
-def _distill_trace_text(answer_text: str, query: str) -> str:
-    pattern = re.compile(r"(-?\d+\.?\d*)")
-    all_nums = pattern.findall(query)
+def _extract_steps_summary(tree: ReasoningTree) -> str:
+    if not tree.provenance:
+        return ""
+    steps_summary = tree.provenance.get("steps_summary")
+    if isinstance(steps_summary, str):
+        return steps_summary.strip()
+    if isinstance(steps_summary, dict):
+        summary = steps_summary.get("summary")
+        if isinstance(summary, str):
+            return summary.strip()
+        return _normalize_whitespace(str(steps_summary))
+    if steps_summary is None:
+        return ""
+    return _normalize_whitespace(str(steps_summary))
 
-    normalized_nums: list[str] = []
-    for x in all_nums:
-        try:
-            num = float(x)
-            if num.is_integer():
-                normalized_nums.append(str(int(num)))
-            else:
-                normalized_nums.append(x)
-        except ValueError:
-            normalized_nums.append(x)
 
-    inputs = normalized_nums[:4]
-    input_str = " ".join(inputs)
+def _extract_final_candidate(tree: ReasoningTree, answer_text: str) -> str | None:
+    if tree.provenance:
+        final_candidate = tree.provenance.get("final_candidate")
+        if isinstance(final_candidate, str):
+            normalized = final_candidate.strip()
+            if normalized:
+                return normalized
+    normalized_answer = answer_text.strip()
+    if normalized_answer:
+        return normalized_answer
+    return None
 
-    template = f"Task: Game24\nInput: {input_str}\nSolution: {answer_text}"
+
+def _extract_distill_input(
+    tree: ReasoningTree,
+    *,
+    task: str,
+    query: str,
+    steps_summary: str,
+    final_candidate: str | None,
+) -> str:
+    if tree.provenance:
+        value = tree.provenance.get("distill_input")
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return _build_distill_input(
+        task=task,
+        query=query,
+        steps_summary=steps_summary,
+        final_candidate=final_candidate,
+    )
+
+
+def _build_distill_input(
+    *,
+    task: str,
+    query: str,
+    steps_summary: str,
+    final_candidate: str | None,
+) -> str:
+    lines = [
+        f"Task: {task}",
+        f"Problem: {query}",
+        f"Solution Steps Summary: {steps_summary}",
+    ]
+    if final_candidate:
+        lines.append(f"Final Candidate: {final_candidate}")
+    return "\n".join(lines)
+
+
+def _distill_trace_text(
+    *,
+    task: str,
+    query: str,
+    steps_summary: str,
+    final_candidate: str | None,
+) -> str:
+    summary_text = _normalize_whitespace(steps_summary)
+    if not summary_text:
+        summary_text = "Use a concise, valid procedure to derive the final answer."
+
+    template_lines = [
+        f"Task: {task}",
+        "Thought Template:",
+        f"1. Restate the problem: {query}",
+        f"2. Apply the summarized method: {summary_text}",
+        "Applicability:",
+        f"- Reuse for similar {task} problems.",
+        "Answer Schema:",
+    ]
+    if final_candidate:
+        template_lines.append(f"- Final Candidate: {final_candidate}")
+    else:
+        template_lines.append("- Final Candidate: <final answer>")
+
+    template = "\n".join(template_lines)
 
     if len(template) > 500:
         template = template[:500] + "..."
 
     return template
+
+
+def _ensure_task_prefixed_template(*, task: str, text: str) -> str:
+    normalized = text.strip()
+    if not normalized:
+        return f"Task: {task}"
+
+    lines = normalized.splitlines()
+    if lines and lines[0].lower().startswith("task:"):
+        lines[0] = f"Task: {task}"
+        return "\n".join(lines).strip()
+
+    return f"Task: {task}\n{normalized}"
 
 
 def _is_cold_start_query(query: str) -> bool:

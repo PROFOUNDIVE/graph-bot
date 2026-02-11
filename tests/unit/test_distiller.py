@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from graph_bot.adapters import distiller as distiller_mod
 from graph_bot.adapters.distiller import (
     LLMDistiller,
@@ -7,7 +9,8 @@ from graph_bot.adapters.distiller import (
     RuleBasedDistiller,
     get_distiller,
 )
-from graph_bot.datatypes import ReasoningNode, ReasoningTree
+from graph_bot.datatypes import ReasoningNode, ReasoningTree, RetrievalResult, UserQuery
+from graph_bot.pipelines import stream_loop
 
 
 class _StubChatClient:
@@ -17,6 +20,46 @@ class _StubChatClient:
     def chat(self, system: str, user: str, temperature: float):
         del system, user, temperature
         return self._response_text, None
+
+
+class _RecordingAdapter:
+    def __init__(self) -> None:
+        self.inserted_trees = []
+
+    def insert_trees(self, trees):
+        self.inserted_trees.extend(trees)
+
+
+class _RecordingMetrics:
+    def __init__(self) -> None:
+        self.run_id = "test_run"
+        self._counter = 0
+
+    def new_call_id(self):
+        self._counter += 1
+        return f"call-{self._counter}"
+
+    def log_token_event(self, event):
+        del event
+
+
+class _RecordingDistiller:
+    def __init__(self) -> None:
+        self.last_tree = None
+
+    def distill_query(self, query: str) -> str:
+        return query
+
+    def distill_trace(self, tree: ReasoningTree):
+        self.last_tree = tree
+        return [
+            ReasoningNode(
+                node_id="template-node",
+                text="Task: wordsorting\nThought Template:\n- deterministic",
+                type="thought",
+                attributes={"subtype": "template", "task": "wordsorting"},
+            )
+        ]
 
 
 def test_get_distiller_modes_and_unknown_mode():
@@ -133,12 +176,120 @@ def test_llm_distiller_trace_extraction(monkeypatch):
     assert len(distilled_nodes) == 1
     node = distilled_nodes[0]
     assert node.node_id == "root"
-    assert node.text == "isolate denominator, then multiply"
+    assert node.text.startswith("Task: game24")
+    assert "isolate denominator, then multiply" in node.text
     assert node.attributes is not None
     assert node.attributes["subtype"] == "template"
     assert node.attributes["original_answer"] == "(8 * 6) / (4 - 2)"
+    assert node.attributes["steps_summary"] == ""
+    assert node.attributes["final_candidate"] == "(8 * 6) / (4 - 2)"
     assert node.attributes["quality"]["validator_passed"] is True
     assert node.attributes["quality"]["parse_ok"] is True
+
+
+def test_llm_distiller_trace_uses_bot_style_input_and_forces_task_prefix(monkeypatch):
+    distiller = LLMDistiller(model="mock-model")
+    captured = {"system": "", "user": ""}
+
+    def _capture_chat(*, system: str, user: str) -> str:
+        captured["system"] = system
+        captured["user"] = user
+        return "Thought Template:\n1) sort tokens\n2) output one line"
+
+    monkeypatch.setattr(distiller, "_chat", _capture_chat)
+
+    tree = ReasoningTree(
+        tree_id="t2",
+        root_id="root",
+        nodes=[
+            ReasoningNode(
+                node_id="root",
+                text="pear apple",
+                type="answer",
+                attributes=None,
+            )
+        ],
+        edges=[],
+        provenance={
+            "query": "Sort these words: pear apple",
+            "solved": True,
+            "task": "wordsorting",
+            "steps_summary": "Identify words, sort alphabetically, emit one line.",
+            "final_candidate": "apple pear",
+            "distill_input": (
+                "Task: wordsorting\n"
+                "Problem: Sort these words: pear apple\n"
+                "Solution Steps Summary: Identify words, sort alphabetically, emit one line.\n"
+                "Final Candidate: apple pear"
+            ),
+        },
+    )
+
+    distilled_nodes = distiller.distill_trace(tree)
+
+    assert "BoT-style" in captured["system"]
+    assert "Distillation Input:" in captured["user"]
+    assert "Solution Steps Summary" in captured["user"]
+    assert "Final Candidate: apple pear" in captured["user"]
+    assert len(distilled_nodes) == 1
+    assert distilled_nodes[0].text.startswith("Task: wordsorting")
+
+
+def test_llm_distiller_trace_rewrites_wrong_task_prefix(monkeypatch):
+    distiller = LLMDistiller(model="mock-model")
+    monkeypatch.setattr(
+        distiller,
+        "_chat",
+        lambda **_kwargs: "Task: mgsm\nThought Template:\n1) do thing",
+    )
+
+    tree = ReasoningTree(
+        tree_id="t3",
+        root_id="root",
+        nodes=[ReasoningNode(node_id="root", text="x", type="answer", attributes=None)],
+        edges=[],
+        provenance={"query": "2 4 6 8 -> 24", "solved": True, "task": "game24"},
+    )
+
+    distilled_nodes = distiller.distill_trace(tree)
+    assert distilled_nodes[0].text.startswith("Task: game24")
+
+
+def test_insert_solution_template_uses_real_task_and_single_template_node():
+    adapter = _RecordingAdapter()
+    distiller = _RecordingDistiller()
+    metrics = _RecordingMetrics()
+    query = UserQuery(
+        id="q-1",
+        question="Sort these words: pear apple",
+        metadata={"task": "wordsorting", "target": "apple pear"},
+    )
+
+    stream_loop._insert_solution_template(
+        adapter=cast(Any, adapter),
+        distiller=cast(Any, distiller),
+        metrics=cast(Any, metrics),
+        t=1,
+        problem_id="p1",
+        answer_text="apple pear",
+        solved=True,
+        query=query,
+        retrieval=RetrievalResult(query_id="q-1", paths=[], concatenated_context=""),
+    )
+
+    assert distiller.last_tree is not None
+    assert distiller.last_tree.provenance is not None
+    assert distiller.last_tree.provenance["task"] == "wordsorting"
+    assert "steps_summary" in distiller.last_tree.provenance
+    assert "distill_input" in distiller.last_tree.provenance
+
+    assert len(adapter.inserted_trees) == 1
+    inserted_tree = adapter.inserted_trees[0]
+    assert inserted_tree.provenance is not None
+    assert inserted_tree.provenance["task"] == "wordsorting"
+    assert len(inserted_tree.nodes) == 1
+    assert inserted_tree.nodes[0].type == "thought"
+    assert inserted_tree.nodes[0].attributes["subtype"] == "template"
 
 
 def test_llm_distiller_empty_tree(monkeypatch):
