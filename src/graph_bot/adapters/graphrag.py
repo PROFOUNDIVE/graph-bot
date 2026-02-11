@@ -53,6 +53,26 @@ def _tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+def _extract_query_task(query: UserQuery) -> str | None:
+    if not query.metadata:
+        return None
+    task = query.metadata.get("task")
+    if task is None:
+        return None
+    task_str = str(task).strip()
+    return task_str or None
+
+
+def _extract_node_task(node: ReasoningNode) -> str | None:
+    if not node.attributes:
+        return None
+    task = node.attributes.get("task")
+    if task is None:
+        return None
+    task_str = str(task).strip()
+    return task_str or None
+
+
 def _read_app_version() -> str | None:
     try:
         return metadata.version("graph-bot")
@@ -245,12 +265,14 @@ class GraphRAGAdapter:
         mode: str | None = None,
         use_edges: bool | None = None,
         policy_id: str | None = None,
+        cross_task_retrieval: bool = False,
     ) -> None:
         self.uri = settings.graphrag_uri
         self.store_path = Path(settings.metagraph_path)
         self.mode = mode or settings.mode
         self.use_edges = use_edges if use_edges is not None else settings.use_edges
         self.policy_id = policy_id or settings.policy_id
+        self.cross_task_retrieval = cross_task_retrieval
         self._graph = self._load_or_init_graph()
 
     def _load_or_init_graph(self) -> MetaGraph:
@@ -510,8 +532,33 @@ class GraphRAGAdapter:
         if not self._graph.nodes:
             return RetrievalResult(query_id=query.id, paths=[], concatenated_context="")
 
+        query_task = _extract_query_task(query)
+        node_index: Dict[str, ReasoningNode] = {
+            node.node_id: node for node in self._graph.nodes
+        }
+        task_filter_applied = False
+        if query_task and not self.cross_task_retrieval:
+            filtered_node_index = {
+                node_id: node
+                for node_id, node in node_index.items()
+                if _extract_node_task(node) == query_task
+            }
+            if filtered_node_index:
+                node_index = filtered_node_index
+                task_filter_applied = True
+            else:
+                logger.info(
+                    "task_scoped_retrieval_empty query_id=%s task=%s reason=no_candidates",
+                    query.id,
+                    query_task,
+                )
+                return RetrievalResult(
+                    query_id=query.id,
+                    paths=[],
+                    concatenated_context="",
+                )
+
         query_tokens = _tokenize(query.question)
-        node_index = {node.node_id: node for node in self._graph.nodes}
         node_scores: Dict[str, float] = {
             node_id: _semantic_similarity(query_tokens, node.text)
             for node_id, node in node_index.items()
@@ -527,7 +574,12 @@ class GraphRAGAdapter:
         elif self.use_edges:
             adjacency: Dict[str, List[str]] = {}
             edge_index: Dict[Tuple[str, str], ReasoningEdge] = {}
+            allowed_node_ids = set(node_index) if task_filter_applied else None
             for edge in self._graph.edges:
+                if allowed_node_ids and (
+                    edge.src not in allowed_node_ids or edge.dst not in allowed_node_ids
+                ):
+                    continue
                 adjacency.setdefault(edge.src, []).append(edge.dst)
                 edge_index[(edge.src, edge.dst)] = edge
 

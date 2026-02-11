@@ -254,3 +254,81 @@ def test_retrieve_paths(adapter):
     assert result.query_id == "q1"
     assert len(result.paths) == 1
     assert "target query" in result.concatenated_context.lower()
+
+
+def _insert_multi_task_retrieval_fixture(adapter: GraphRAGAdapter) -> None:
+    algebra_node = ReasoningNode(
+        node_id="a1", text="shared algebra pattern", type="thought"
+    )
+    geometry_node = ReasoningNode(
+        node_id="g1", text="shared geometry pattern", type="thought"
+    )
+
+    algebra_tree = ReasoningTree(
+        tree_id="ta",
+        root_id="a1",
+        nodes=[algebra_node],
+        edges=[],
+        provenance={"task": "algebra"},
+    )
+    geometry_tree = ReasoningTree(
+        tree_id="tg",
+        root_id="g1",
+        nodes=[geometry_node],
+        edges=[],
+        provenance={"task": "geometry"},
+    )
+    adapter.insert_trees([algebra_tree, geometry_tree])
+
+
+def test_retrieve_paths_without_task_metadata_keeps_unfiltered_behavior(adapter):
+    _insert_multi_task_retrieval_fixture(adapter)
+
+    query = UserQuery(id="q-no-task", question="shared pattern")
+    result = adapter.retrieve_paths(query, k=2)
+
+    context = result.concatenated_context.lower()
+    assert "shared algebra pattern" in context
+    assert "shared geometry pattern" in context
+
+
+def test_retrieve_paths_scopes_to_query_task(adapter):
+    _insert_multi_task_retrieval_fixture(adapter)
+
+    query = UserQuery(
+        id="q-task-only", question="shared pattern", metadata={"task": "algebra"}
+    )
+    result = adapter.retrieve_paths(query, k=2)
+
+    context = result.concatenated_context.lower()
+    assert "shared algebra pattern" in context
+    assert "shared geometry pattern" not in context
+
+
+def test_retrieve_paths_cross_task_override_disables_task_filtering(tmp_path):
+    metagraph_path = tmp_path / "metagraph.json"
+    with patch("graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path):
+        override_adapter = GraphRAGAdapter(cross_task_retrieval=True)
+
+    _insert_multi_task_retrieval_fixture(override_adapter)
+
+    query = UserQuery(
+        id="q-cross-task", question="shared pattern", metadata={"task": "algebra"}
+    )
+    result = override_adapter.retrieve_paths(query, k=2)
+
+    context = result.concatenated_context.lower()
+    assert "shared algebra pattern" in context
+    assert "shared geometry pattern" in context
+
+
+def test_retrieve_paths_returns_empty_when_task_filter_has_no_matches(adapter):
+    _insert_multi_task_retrieval_fixture(adapter)
+
+    query = UserQuery(
+        id="q-task-fallback", question="shared pattern", metadata={"task": "calculus"}
+    )
+    result = adapter.retrieve_paths(query, k=2)
+
+    assert result.paths == []
+    assert result.concatenated_context == ""
