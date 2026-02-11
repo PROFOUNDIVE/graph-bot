@@ -70,6 +70,8 @@ def load_game24_problems(file_path: Path) -> List[Game24Problem]:
 def run_continual_stream(
     *,
     problems_file: Path,
+    task: str = "game24",
+    cross_task_retrieval: bool = False,
     mode: str | None = None,
     use_edges: bool | None = None,
     policy_id: str | None = None,
@@ -82,12 +84,14 @@ def run_continual_stream(
     metrics_out_dir: Path = Path("outputs/stream_logs"),
     run_id: str = "run",
 ):
-    """Run continual stream loop for Game of 24."""
+    """Run continual stream loop for a selected task."""
     from ..settings import settings
+    from ..tasks.registry import registry
 
     start_run = time.perf_counter()
 
-    problems = load_game24_problems(problems_file)
+    task_spec = registry.get_task(task)
+    problems = list(task_spec.load_problems(problems_file))
     if max_problems:
         problems = problems[:max_problems]
 
@@ -95,6 +99,7 @@ def run_continual_stream(
         mode=mode,
         use_edges=use_edges,
         policy_id=policy_id,
+        cross_task_retrieval=cross_task_retrieval,
     )
     validator = get_validator(validator_mode, validator_model)
     if distiller is None:
@@ -104,7 +109,15 @@ def run_continual_stream(
 
     # Manifest Integration
     manifest = RunManifest()
-    manifest.log_start(run_id, config={"mode": mode, "model": settings.llm_model})
+    manifest.log_start(
+        run_id,
+        config={
+            "mode": mode,
+            "model": settings.llm_model,
+            "task": task_spec.name,
+            "cross_task_retrieval": cross_task_retrieval,
+        },
+    )
 
     pricing_table = load_pricing_table(settings.pricing_path)
     if settings.llm_model not in pricing_table.get("models", {}):
@@ -120,8 +133,11 @@ def run_continual_stream(
         old_handler = signal.signal(signal.SIGALRM, timeout_handler)
         try:
             for t, problem in enumerate(problems, 1):
-                problem_id = problem.id
-                query = problem.to_user_query()
+                query = task_spec.to_user_query(problem)
+                problem_id = query.id
+                query_metadata = dict(query.metadata or {})
+                query_metadata.setdefault("task", task_spec.name)
+                query = query.model_copy(update={"metadata": query_metadata})
                 start_problem = time.perf_counter()
                 poisoned_update_rate: float | None = None
 
@@ -140,7 +156,7 @@ def run_continual_stream(
                     if not is_baseline:
                         start_distill = time.perf_counter()
                         distilled_question = query.question
-                        if query.metadata and query.metadata.get("task") == "game24":
+                        if task_spec.name == "game24":
                             distilled_question = distiller.distill_query(query.question)
                         distilled_query = query.model_copy(
                             update={"question": distilled_question}
@@ -215,6 +231,7 @@ def run_continual_stream(
                             "metadata": {
                                 "pricing_version": "v0",
                                 "mode": active_mode,
+                                "task": query_metadata.get("task", task_spec.name),
                                 "distilled_question": distilled_query.question,
                                 "packed_context_tokens": (
                                     len(
@@ -254,6 +271,8 @@ def run_continual_stream(
                         _last_reason,
                         attempts_used,
                     ) = _solve_with_retries(
+                        task=task_spec,
+                        problem=problem,
                         query=query,
                         retrieval=retrieval,
                         validator=validator,
@@ -600,6 +619,34 @@ def _insert_solution_template(
     retrieval: RetrievalResult | None = None,
 ) -> None:
     from ..datatypes import ReasoningEdge, ReasoningNode, ReasoningTree
+    from ..tasks.registry import registry
+
+    query_metadata = query.metadata or {}
+    task_name = str(query_metadata.get("task", "game24"))
+
+    steps_summary: dict[str, Any]
+    distill_input: str
+    try:
+        task = registry.get_task(task_name)
+        steps_summary = task.summarize_steps(
+            raw_output=answer_text,
+            candidate=answer_text,
+            query=query,
+        )
+        distill_input = task.distill_template_input(query, steps_summary)
+    except Exception:
+        steps_summary = {
+            "task": task_name,
+            "query": query.question,
+            "candidate": answer_text,
+            "summary": f"Use candidate answer as a reusable solution schema: {answer_text}",
+        }
+        distill_input = (
+            f"Task: {task_name}\n"
+            f"Problem: {query.question}\n"
+            f"Solution Steps Summary: {steps_summary['summary']}\n"
+            f"Final Candidate: {answer_text}"
+        )
 
     # 1. Distill trace into a compact template
     start_distill = time.perf_counter()
@@ -611,18 +658,42 @@ def _insert_solution_template(
                 node_id=f"episode-{problem_id}-solution",
                 text=answer_text,
                 type="answer",
-                attributes={"query": query.question},
+                attributes={"query": query.question, "task": task_name},
             )
         ],
         edges=[],
         provenance={
-            "task": "game24",
+            "task": task_name,
             "source": "stream",
             "query": query.question,
             "solved": solved,
+            "steps_summary": steps_summary,
+            "final_candidate": answer_text,
+            "distill_input": distill_input,
         },
     )
     distilled_nodes = distiller.distill_trace(distill_tree)
+    if distilled_nodes:
+        template_attributes = dict(distilled_nodes[0].attributes or {})
+        template_attributes["subtype"] = "template"
+        template_attributes["task"] = task_name
+        distilled_nodes = [
+            distilled_nodes[0].model_copy(
+                update={
+                    "type": "thought",
+                    "attributes": template_attributes,
+                }
+            )
+        ]
+    else:
+        distilled_nodes = [
+            ReasoningNode(
+                node_id=f"episode-{problem_id}-template",
+                text=f"Task: {task_name}\nThought Template:\n1. {distill_input}",
+                type="thought",
+                attributes={"subtype": "template", "task": task_name},
+            )
+        ]
     latency_distill = (time.perf_counter() - start_distill) * 1000.0
 
     metrics.log_token_event(
@@ -667,10 +738,10 @@ def _insert_solution_template(
 
     tree = ReasoningTree(
         tree_id=f"episode-{problem_id}",
-        root_id=f"episode-{problem_id}-solution",
+        root_id=distilled_nodes[0].node_id,
         nodes=distilled_nodes,
         edges=edges,
-        provenance={"task": "game24", "source": "stream"},
+        provenance={"task": task_name, "source": "stream"},
     )
     adapter.insert_trees([tree])
 
@@ -782,6 +853,8 @@ def _precheck_candidate(
 
 def _solve_with_retries(
     *,
+    task: Any,
+    problem: Any,
     query: UserQuery,
     retrieval,
     validator: BaseValidator,
@@ -792,8 +865,6 @@ def _solve_with_retries(
     problem_id: str,
     mode: str = "graph_bot",
 ) -> tuple[str, dict[str, object], bool, int | None, str | None, int]:
-    import re
-
     from ..adapters.mock_client import MockLLMClient
     from ..adapters.vllm_openai_client import VLLMOpenAIClient
     from ..settings import settings
@@ -804,77 +875,7 @@ def _solve_with_retries(
         settings.retry_temperature_3,
     ]
 
-    # GoT Prompts (Source: graph-of-thoughts/tasks/gameof24.py)
-    got_io_system = """You are playing the 24 Game.
-
-Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
-Parentheses are allowed. Create one valid Python expression that evaluates to 24.
-
-Output must follow the example format as closely as possible: a single line of the form
-Output: <python_expression>
-Do not include any additional explanation or text."""
-
-    got_io_user_template = """<Example>
-Input: 4 9 10 13
-Output: (10 - 4) * (13 - 9)
-</Example>
-
-Input: {input}
-Output:"""
-
-    got_cot_system = """You are playing the 24 Game.
-
-Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
-Parentheses are allowed. Find one valid Python expression that evaluates to 24.
-
-You may show intermediate steps, but you MUST enclose the final Python expression in <answer> tags:
-<answer>(1 + 2) * 8</answer>
-Do not include any additional text inside the tags."""
-
-    got_cot_user_template = """<Examples>
-Input: 4 9 10 13
-Work:
-(10 - 4) = 6
-(13 - 9) = 4
-6 * 4 = 24
-<answer>(10 - 4) * (13 - 9)</answer>
-
-Input: 1 3 4 6
-Work:
-(6 / 3) = 2
-4 * 2 = 8
-8 * 3 = 24  (using 1 and 3? not allowed) -> backtrack
-(4 - 1) = 3
-6 * 3 = 18
-18 + 3 = 21 -> backtrack
-(6 - 1) = 5
-5 * 4 = 20
-20 + 3 = 23 -> backtrack
-(6 - 4) = 2
-3 * 2 = 6
-6 * 4 = 24 (uses 4 twice) -> backtrack
-(6 / (1 - 3/4)) = 24
-<answer>6 / (1 - 3/4)</answer>
-</Examples>
-
-Input: {input}
-"""
-
-    pattern = re.compile(r"(-?\d+\.?\d*)")
-    numbers = [int(float(x)) for x in pattern.findall(query.question)[:4]]
-    numbers_str = " ".join(str(x) for x in numbers)
-
-    if mode == "io":
-        system = got_io_system
-        user_template = got_io_user_template.format(input=numbers_str)
-    elif mode == "cot":
-        system = got_cot_system
-        user_template = got_cot_user_template.format(input=numbers_str)
-    else:
-        # graph_bot mode now uses CoT style (multi-line reasoning)
-        system = got_cot_system
-        base_user = got_cot_user_template.format(input=numbers_str)
-        user_template = f"{base_user}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n"
+    system, user_template = task.build_solver_prompt(mode, query, retrieval)
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -910,8 +911,7 @@ Input: {input}
                 "\n\nPrevious attempt was invalid.\n"
                 f"Reason: {last_reason}\n"
                 f"Previous output: {prev}\n"
-                "Please fix it. Output ONLY the valid Python expression in the format:\n"
-                "Output: <expression>"
+                "Please fix it and provide a valid final answer in the required task format."
             )
             current_user += retry_line
 
@@ -977,21 +977,22 @@ Input: {input}
         total_latency_ms += latency_ms or 0.0
 
         raw_output = answer_text or ""
-        candidate_line, normalization = _normalize_candidate_line(
-            raw_output, allowed_numbers=numbers
-        )
+        candidate_line = task.extract_candidate(raw_output, query)
+        normalization = "task_extract"
 
         attempt_passed: bool = False
         reason = None
         precheck_failure_reason = None
+        validator_name = validator.get_validator_name()
 
         if solve_error_type is None:
-            precheck_failure_reason = _precheck_candidate(
-                candidate_line=candidate_line,
-                allowed_numbers=numbers,
-            )
             start_val = time.perf_counter()
-            if precheck_failure_reason is None:
+            if validator_name == "oracle":
+                attempt_passed, reason = task.oracle_validate(
+                    candidate_line, query, problem
+                )
+                answer_text = candidate_line
+            else:
                 attempt_passed = bool(
                     validator.validate(candidate_line, query.question)
                 )
@@ -1000,9 +1001,6 @@ Input: {input}
                 else:
                     reason = validator.failure_reason(candidate_line, query.question)
                     answer_text = candidate_line
-            else:
-                reason = precheck_failure_reason
-                answer_text = candidate_line
             latency_val_ms = (time.perf_counter() - start_val) * 1000.0
         else:
             reason = "solve_error"
@@ -1071,11 +1069,8 @@ Input: {input}
         validate_error_type: str | None
         if solve_error_type is not None:
             validate_error_type = "skipped_solve_error"
-        elif precheck_failure_reason is not None:
-            validate_error_type = "skipped_precheck"
         else:
             validate_error_type = None
-        validator_name = validator.get_validator_name()
         validate_operation = (
             "validate_llm_judge" if validator_name == "weak_llm_judge" else "validate"
         )
