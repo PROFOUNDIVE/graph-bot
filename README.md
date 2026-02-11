@@ -2,12 +2,12 @@
 
 Research prototype for **Non-parametric Continual Learning** using persistent reasoning graphs.
 
-> **Status:** v0.4.0 (Active Research)
+> **Status:** v0.5.0 (Active Research)
 > **Paper:** Graph-BoT: Amortizing Reasoning Costs via Persistent Memory (Work in Progress)
 
 ## Overview
 
-Graph-BoT extends **Buffer of Thoughts (BoT)** by structuring reasoning templates into a persistent **MetaGraph**. It aims to solve the "Amortized System 2" problem:
+Graph-Bot extends **Buffer of Thoughts (BoT)** by structuring reasoning templates into a persistent **MetaGraph**. It aims to solve the "Amortized System 2" problem:
 
 > *Can we amortize the cost of expensive reasoning (CoT/ToT) by accumulating and reusing successful thought structures over time?*
 
@@ -16,6 +16,7 @@ Graph-BoT extends **Buffer of Thoughts (BoT)** by structuring reasoning template
 - **Continual Stream Pipeline**: Online learning loop where every solved problem updates the memory.
 - **Amortized Efficiency**: Costs decrease over time as retrieval replaces generation.
 - **Stability Mechanisms**: Validator-gated updates prevent memory contamination.
+- **Multi-Task Support (v0.5)**: Extensible task architecture supporting `game24`, `wordsorting`, `mgsm`.
 
 ---
 
@@ -64,7 +65,7 @@ graph-bot llm-server start --port 2427 --served-model-name llama3-8b-instruct --
 ```bash
 GRAPH_BOT_LLM_BASE_URL=http://127.0.0.1:2427/v1 \
 GRAPH_BOT_LLM_MODEL=llama3-8b-instruct \
-graph-bot stream data/game24.jsonl --run-id run --metrics-out-dir outputs/stream_logs --mode graph_bot --use-edges --policy-id semantic_topK_stats_rerank --validator-mode oracle
+graph-bot stream data/game24.jsonl --run-id run --metrics-out-dir outputs/stream_logs --mode graph_bot --task game24 --use-edges --policy-id semantic_topK_stats_rerank --validator-mode oracle
 ```
 
 This produces JSONL logs under `outputs/stream_logs/`:
@@ -72,12 +73,40 @@ This produces JSONL logs under `outputs/stream_logs/`:
 - `outputs/stream_logs/run.calls.jsonl`
 - `outputs/stream_logs/run.problems.jsonl`
 - `outputs/stream_logs/run.stream.jsonl`
+- `outputs/stream_logs/run.token_events.jsonl`
 
 4) Generate EXP1 amortization curve (CSV):
 
 ```bash
 graph-bot amortize outputs/stream_logs/run.stream.jsonl --out outputs/amortization_curve.csv
 ```
+
+## v0.5 New Features
+
+### Domain Extensibility
+Support for multiple reasoning domains beyond Game24.
+
+- **Task Registry**: Plug-in system for loading, prompting, and validating different tasks.
+- **Supported Tasks**:
+  - `game24`: Arithmetic reasoning (default).
+  - `wordsorting`: Text processing constraint satisfaction.
+  - `mgsm`: Multilingual grade school math.
+
+```bash
+graph-bot stream data/math.jsonl --task mgsm --cross-task-retrieval
+```
+
+### Task-Scoped Retrieval
+Prevents memory contamination between different tasks.
+
+- **Default**: Retrieval is strictly isolated to the current task's templates.
+- **Override**: `--cross-task-retrieval` enables sharing reasoning patterns across domains.
+
+### BoT-Aligned Distillation
+Ensures distilled templates follow the Buffer of Thoughts structure.
+
+- **Input**: Summarized solution steps (not raw CoT).
+- **Output**: Structured, task-prefixed thought templates.
 
 ## v0.4 New Features
 
@@ -227,9 +256,9 @@ Notable settings:
 
 - `validators.py`: Problem validators (`Game24Validator`, `WeakLLMJudgeValidator`, etc.)
 
-## Design Spec (v0.4.0)
+## Design Spec (v0.5.0)
 
-> See [docs/specs/v04_summary.md](docs/specs/v04_summary.md) for architecture details.
+> See [docs/specs/v05_summary.md](docs/specs/v05_summary.md) for architecture details.
 
 ### Pipeline
 
