@@ -19,7 +19,7 @@ The v0.3 pipeline implements a symmetric distillation loop for both input (queri
 
 Unlike previous versions that relied on static hierarchies, v0.3 introduces **Online Edge Connection**:
 - **Causal Edges:** Represent logical dependencies discovered during Trace Distillation.
-- **Structural Edges:** Connect nodes within the same reasoning tree or problem session.
+- **Structural Edges:** Connect nodes within the same reasoning episode (ReasoningTree) or problem session.
 - **Dynamic Connectivity:** Edges are added during the `Insert` phase based on co-occurrence and explicit causal hints.
 
 ## 3) Budget Fairness (Packing Logic)

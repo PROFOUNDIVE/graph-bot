@@ -58,7 +58,7 @@ class StreamCumulativeMetrics(BaseModel):
 
 
 class SeedData(BaseModel):
-    """Minimal unit to start reasoning tree generation."""
+    """Minimal unit to start per-episode reasoning artifact generation."""
 
     id: str
     content: str
@@ -89,7 +89,12 @@ class ReasoningEdge(BaseModel):
 
 
 class ReasoningTree(BaseModel):
-    """A tree-shaped reasoning artifact. Represented as nodes + edges with a root."""
+    """Episode-level reasoning subgraph container.
+
+    This model does NOT enforce strict tree invariants (e.g., acyclic, single-parent,
+    connected). It is a lightweight container of `ReasoningNode`/`ReasoningEdge` for a
+    single problem episode, with `root_id` indicating the conventional entry/focus node.
+    """
 
     tree_id: str
     root_id: str
@@ -99,7 +104,7 @@ class ReasoningTree(BaseModel):
 
 
 class MetaGraph(BaseModel):
-    """Persistent graph buffer built from multiple reasoning trees."""
+    """Persistent graph buffer built from multiple reasoning episodes."""
 
     graph_id: str
     nodes: List[ReasoningNode] = Field(default_factory=list)

@@ -89,7 +89,7 @@ WeakLLMJudgeValidator logs token events with:
 
 New unit tests in v0.4:
 - `test_validators.py`: 4 tests for LLM judge (YES/NO parsing, error handling)
-- `test_distiller.py`: 3 tests for LLM distiller (query normalization, trace distillation, empty tree guard)
+- `test_distiller.py`: 3 tests for LLM distiller (query normalization, trace distillation, empty-trace guard)
 
 All tests use mocked LLM responses to avoid real API calls.
 
