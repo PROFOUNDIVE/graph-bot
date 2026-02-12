@@ -69,31 +69,47 @@ class LLMDistiller(AbstractDistiller):
         self._fallback_distiller = RuleBasedDistiller()
 
     def distill_query(self, query: str) -> str:
-        normalized_query = _normalize_whitespace(query)
+        raw_query = query
+        normalized_query = raw_query.strip()
         if not normalized_query:
-            return query
-
-        # Budget-aware cold-start guard:
-        # Skip LLM query distillation when the input is still a short raw puzzle.
-        if _is_cold_start_query(normalized_query):
-            return self._fallback_distiller.distill_query(normalized_query)
+            return raw_query
 
         system_prompt = (
-            "You normalize user queries for retrieval. "
-            "Return exactly one concise normalized query sentence."
+            "[Problem Distiller]\n"
+            "As a highly professional and intelligent expert in information distillation, "
+            "you excel at extracting essential information to solve problems from user input "
+            "queries. You adeptly transform this extracted information into a suitable format "
+            "based on the respective type of the issue.\n\n"
+            "Please categorize and extract the crucial information required to solve the "
+            "problem from the user's input query. The distilled information MUST include:\n"
+            "1. Key information:\n"
+            "Values and information of key variables extracted from user input, which will "
+            "be handed over to the respective expert for task resolution, ensuring all "
+            "essential information required to solve the problem is provided.\n"
+            "2. Restrictions:\n"
+            "The objective of the problem and corresponding constraints.\n"
+            "3. Distilled task:\n"
+            "Extend the problem based on 1 and 2. Summarize a meta problem that can address "
+            "the user query and handle more input and output variations. Incorporate the "
+            "real-world scenario of the extended problem along with the types of key variables "
+            "and information constraints from the original problem to restrict the key variables "
+            "in the extended problem. After that, use the user query input key information as "
+            "input to solve the problem as an example.\n\n"
+            "Hard constraints:\n"
+            "- Do NOT emit raw chain-of-thought.\n"
+            "- Output MUST be plain text and MUST contain exactly these top-level section headers "
+            "in this order: Key information:, Restrictions:, Distilled task:.\n"
+            "- Keep the example concise; do not over-explain."
         )
-        user_prompt = (
-            "Rewrite the query to a concise retrieval-friendly form. "
-            "Preserve intent and constraints.\n"
-            f"Query: {normalized_query}"
-        )
+        user_prompt = f"User input query:\n{normalized_query}"
+
         distilled_query = self._chat(system=system_prompt, user=user_prompt)
         if not distilled_query:
-            return self._fallback_distiller.distill_query(normalized_query)
+            return normalized_query
 
-        normalized_distilled_query = _normalize_whitespace(distilled_query)
+        normalized_distilled_query = _normalize_multiline(distilled_query)
         if not normalized_distilled_query:
-            return self._fallback_distiller.distill_query(normalized_query)
+            return normalized_query
         return normalized_distilled_query
 
     def distill_trace(self, tree: ReasoningTree) -> List[ReasoningNode]:
@@ -122,24 +138,43 @@ class LLMDistiller(AbstractDistiller):
         )
 
         system_prompt = (
-            "You distill reasoning traces into BoT-style reusable thought templates. "
-            "Use only the provided summarized input and do not emit raw chain-of-thought. "
-            "Return plain text with this exact skeleton:\n"
-            "Task: <task>\n"
-            "Thought Template:\n"
-            "1. <step>\n"
-            "2. <step>\n"
-            "Applicability:\n"
-            "- <when this template applies>\n"
-            "Answer Schema:\n"
-            "- Final Candidate: <value or format>."
+            "Prompt for Template Distillation:\n"
+            "User: [Problem Description] + [Solution Steps or Code]\n"
+            "To extract and summarize the high-level paradigms and general approaches for solving such\n"
+            "problems, please follow these steps in your response:\n"
+            "1. Core task summarization:\n"
+            "Identify and describe the basic type and core challenges of the problem, such as classifying it\n"
+            "as a mathematical problem (e.g., solving a quadratic equation), a data structure problem (e.g.,\n"
+            "array sorting), an algorithm problem (e.g., search algorithms), etc. And analyze the most\n"
+            "efficient way to solve the problem.\n"
+            "2. Solution Steps Description:\n"
+            "Outline the general solution steps, including how to define the problem, determine variables,\n"
+            "list key equations or constraints, choose appropriate solving strategies and methods, and how\n"
+            "to verify the correctness of the results.\n"
+            "3. General Answer Template:\n"
+            "Based on the above analysis, propose a template or approach that can be widely applied\n"
+            "to this type of problem, including possible variables, functions, class definitions, etc. If it\n"
+            "is a programming problem, provide a set of base classes and interfaces that can be used to\n"
+            "construct solutions to specific problems.\n"
+            "Please ensure that your response is highly concise and structured, so that specific solutions\n"
+            "can be transformed into generalizable methods.\n"
+            "[Optional] Here are some exemplars of the thought-template: (Choose cross-task or\n"
+            "in-task exemplars based on the analysis of the Core task summarization.)\n\n"
+            "Hard constraints:\n"
+            "- Do NOT emit raw chain-of-thought.\n"
+            "- Output plain text only.\n"
+            "- Be concise and structured."
         )
         user_prompt = (
-            f"Task: {task}\n"
-            "Distillation Input:\n"
-            f"{distill_input}\n\n"
-            "Return template-only output that is structured and reusable across similar "
-            "problems in the same task."
+            "User:\n"
+            "[Problem Description]\n"
+            f"{query}\n\n"
+            "[Solution Steps or Code]\n"
+            f"{steps_summary}\n\n"
+            "[Final Candidate]\n"
+            f"{final_candidate or ''}\n\n"
+            "[Optional thought-template exemplars]\n"
+            "<none>"
         )
         distilled_text = self._chat(system=system_prompt, user=user_prompt)
         if not distilled_text:
@@ -370,6 +405,29 @@ def _is_cold_start_query(query: str) -> bool:
 
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_multiline(text: str) -> str:
+    value = text.strip()
+    if not value:
+        return ""
+    lines = [ln.strip() for ln in value.splitlines()]
+    out: List[str] = []
+    last_was_empty = False
+    for ln in lines:
+        if not ln:
+            if not out:
+                continue
+            if last_was_empty:
+                continue
+            out.append("")
+            last_was_empty = True
+            continue
+        out.append(ln)
+        last_was_empty = False
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
 
 
 def _sanitize_llm_output(text: str) -> str:

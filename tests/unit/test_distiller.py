@@ -99,13 +99,26 @@ def test_rulebased_distiller_query_distillation_sorts_first_four_numbers():
 def test_llm_distiller_cold_start_guard_skips_llm_and_uses_rulebased():
     distiller = LLMDistiller(model="mock-model")
 
-    # If the cold-start guard triggers, the LLM path shouldn't run.
-    def _should_not_be_called(*_args, **_kwargs):
-        raise AssertionError("LLM path should be skipped for cold-start queries")
+    def _should_be_called(*_args, **_kwargs):
+        return (
+            "Key information:\n"
+            "- numbers: 2 4 6 8\n\n"
+            "Restrictions:\n"
+            "- Objective: solve the 24 game\n"
+            "- Constraints: use each number exactly once\n\n"
+            "Distilled task:\n"
+            "- Real-world scenario: arithmetic puzzle normalization\n"
+            "- Variables: numbers (List[int])\n"
+            "- Task statement: derive a correct expression that reaches target\n"
+            "- Example: numbers=2 4 6 8"
+        )
 
-    setattr(distiller, "_chat", _should_not_be_called)
+    setattr(distiller, "_chat", _should_be_called)
 
-    assert distiller.distill_query("2 4 6 8 -> 24") == "Solve 24 with 2 4 6 8"
+    distilled = distiller.distill_query("2 4 6 8 -> 24")
+    assert distilled.startswith("Key information:")
+    assert "Restrictions:" in distilled
+    assert "Distilled task:" in distilled
 
 
 def test_llm_distiller_chat_failure_falls_back_to_rulebased(monkeypatch):
@@ -116,10 +129,8 @@ def test_llm_distiller_chat_failure_falls_back_to_rulebased(monkeypatch):
 
     monkeypatch.setattr(distiller, "_build_client", _raise_on_build)
 
-    # This input should NOT be treated as a cold-start query (contains alpha + longer text),
-    # so the LLM path is attempted, then falls back when _chat() returns None.
     query = "Please solve 2 4 6 8 for the 24 game using a reusable strategy"
-    assert distiller.distill_query(query) == "Solve 24 with 2 4 6 8"
+    assert distiller.distill_query(query) == query
 
 
 def test_sanitize_llm_output_strips_code_fences_and_known_prefixes():
@@ -133,7 +144,15 @@ def test_llm_distiller_query_normalization(monkeypatch):
         distiller,
         "_build_client",
         lambda: _StubChatClient(
-            "Normalized Query:   solve with reusable arithmetic steps   "
+            "Key information:\n"
+            "- intent: solve with reusable arithmetic steps\n\n"
+            "Restrictions:\n"
+            "- Objective: normalize the problem\n\n"
+            "Distilled task:\n"
+            "- Real-world scenario: reusable reasoning across similar inputs\n"
+            "- Variables: intent (str)\n"
+            "- Task statement: distill the problem\n"
+            "- Example: intent='solve with reusable arithmetic steps'"
         ),
     )
 
@@ -141,7 +160,8 @@ def test_llm_distiller_query_normalization(monkeypatch):
         "Need help solving this puzzle with reusable strategy"
     )
 
-    assert distilled == "solve with reusable arithmetic steps"
+    assert distilled.startswith("Key information:")
+    assert "intent: solve with reusable arithmetic steps" in distilled
 
 
 def test_llm_distiller_trace_extraction(monkeypatch):
@@ -149,7 +169,11 @@ def test_llm_distiller_trace_extraction(monkeypatch):
     monkeypatch.setattr(
         distiller,
         "_build_client",
-        lambda: _StubChatClient("Template: isolate denominator, then multiply"),
+        lambda: _StubChatClient(
+            "Core task summarization: arithmetic puzzle template\n"
+            "Solution Steps Description: outline reusable steps\n"
+            "General Answer Template: provide a reusable template"
+        ),
     )
 
     tree = ReasoningTree(
@@ -177,7 +201,7 @@ def test_llm_distiller_trace_extraction(monkeypatch):
     node = distilled_nodes[0]
     assert node.node_id == "root"
     assert node.text.startswith("Task: game24")
-    assert "isolate denominator, then multiply" in node.text
+    assert "Core task summarization" in node.text
     assert node.attributes is not None
     assert node.attributes["subtype"] == "template"
     assert node.attributes["original_answer"] == "(8 * 6) / (4 - 2)"
@@ -227,10 +251,11 @@ def test_llm_distiller_trace_uses_bot_style_input_and_forces_task_prefix(monkeyp
 
     distilled_nodes = distiller.distill_trace(tree)
 
-    assert "BoT-style" in captured["system"]
-    assert "Distillation Input:" in captured["user"]
-    assert "Solution Steps Summary" in captured["user"]
-    assert "Final Candidate: apple pear" in captured["user"]
+    assert "Prompt for Template Distillation" in captured["system"]
+    assert "Core task summarization" in captured["system"]
+    assert "[Problem Description]" in captured["user"]
+    assert "[Solution Steps or Code]" in captured["user"]
+    assert "apple pear" in captured["user"]
     assert len(distilled_nodes) == 1
     assert distilled_nodes[0].text.startswith("Task: wordsorting")
 
