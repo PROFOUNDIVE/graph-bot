@@ -24,10 +24,18 @@ To prevent "cross-talk" between domains (e.g., retrieving math templates for a w
 The distillation pipeline now strictly follows the **Buffer of Thoughts** (BoT) specification.
 
 - **Input**: Summarized solution steps (not raw CoT) + final candidate.
-- **Output**: Structured thought template prefixed with `Task: <name>` to guarantee correct indexing.
+- **Output**: Structured thought template (Template Distillation prompt) prefixed with `Task: <name>` to guarantee correct indexing.
 - **Cardinality**: Exactly one "thought template" node is inserted per solved problem.
 
-### 1.4 New Supported Domains
+### 1.4 Solve&Instantiate (Meta Reasoner)
+Solve&Instantiate is aligned to BoT's per-query minimal call structure by embedding the BoT "Meta Reasoner" prompt (verbatim) into the task solver system prompt for `--mode graph_bot`.
+
+- **No extra instantiate call**: instantiation happens inside the single solve call using retrieved context.
+- **Tasks updated**: `game24`, `wordsorting`, `mgsm`.
+
+See `docs/specs/bot_alignment_solve_instantiate_meta_reasoner.md`.
+
+### 1.5 New Supported Domains
 | Domain | Type | Validator | Characteristics |
 |--------|------|-----------|-----------------|
 | **Game24** | Symbolic Math | Oracle | Arithmetic expressions evaluating to 24 |
@@ -69,4 +77,5 @@ See `docs/specs/task_module_authoring.md` for a checklist on implementing new ta
 
 - **Weak Validator Integration**: Wiring `WeakLLMJudgeValidator` into the task oracle slot for open-ended domains.
 - **Dense Retrieval**: Replacing Jaccard similarity with embedding-based search.
+- **Template Similarity Gate**: Add a dense similarity threshold check before inserting new templates into the MetaGraph.
 - **Code-Augmented Tasks**: Python interpreter integration for tasks like `HumanEval`.

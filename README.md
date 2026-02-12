@@ -17,6 +17,7 @@ Graph-Bot extends **Buffer of Thoughts (BoT)** by structuring reasoning template
 - **Amortized Efficiency**: Costs decrease over time as retrieval replaces generation.
 - **Stability Mechanisms**: Validator-gated updates prevent memory contamination.
 - **Multi-Task Support (v0.5)**: Extensible task architecture supporting `game24`, `wordsorting`, `mgsm`.
+- **BoT Prompt Alignment (v0.5)**: Problem Distiller + Meta Reasoner + Template Distillation prompts integrated.
 
 ---
 
@@ -106,7 +107,18 @@ Prevents memory contamination between different tasks.
 Ensures distilled templates follow the Buffer of Thoughts structure.
 
 - **Input**: Summarized solution steps (not raw CoT).
-- **Output**: Structured, task-prefixed thought templates.
+- **Output**: Templates distilled via the BoT-style "Template Distillation" prompt, prefixed with `Task: <name>`.
+
+### LLM Distillation Prompt Alignment
+LLM-based distillation prompts are aligned to BoT-style roles.
+
+- **Problem Distiller (Query)**: Emits `Key information` / `Restrictions` / `Distilled task`.
+- **Template Distillation (Trace)**: Produces concise, structured templates for MetaGraph insertion.
+
+### Solve&Instantiate (Meta Reasoner)
+In `--mode graph_bot`, solver prompts are prefixed with the BoT "Meta Reasoner" prompt (verbatim) so retrieval context is instantiated within the single solve call.
+
+See `docs/specs/bot_alignment_solve_instantiate_meta_reasoner.md`.
 
 ## v0.4 New Features
 
@@ -312,5 +324,6 @@ Notable settings:
 ### Remaining Limitations & Future Work
 
 1.  **Retrieval Quality**: Currently uses Jaccard (token overlap). Dense embedding integration is planned.
-2.  **Edge Creation**: Edges only form on retrieval hits. Cold-start creates isolated nodes.
-3.  **Code-augmented Execution**: To match BoT (Code-aug) performance.
+2.  **Template Similarity Gate**: Add a dense similarity threshold check before inserting new templates into the MetaGraph.
+3.  **Edge Creation**: Edges only form on retrieval hits. Cold-start creates isolated nodes.
+4.  **Code-augmented Execution**: To match BoT (Code-aug) performance.
