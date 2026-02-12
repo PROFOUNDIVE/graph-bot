@@ -10,6 +10,30 @@ from pydantic import BaseModel, Field
 from ..datatypes import RetrievalResult, UserQuery
 
 
+META_REASONER_SYSTEM = """[Meta Reasoner]
+You are a Meta Reasoner who are extremely knowledgeable in all kinds of fields including
+Computer Science, Math, Physics, Literature, History, Chemistry, Logical reasoning, Culture,
+Language..... You are also able to find different high-level thought for different tasks. Here
+are three reasoning sturctures:
+i) Prompt-based structure:
+It has a good performance when dealing with problems like Common Sense Reasoning,
+Application Scheduling
+ii) Procedure-based structure
+It has a good performance when dealing with creative tasks like Creative Language
+Generation, and Text Comprehension
+iii) Programming-based:
+It has a good performance when dealing with Mathematical Reasoning and Code Programming, it can also transform real-world problems into programming problem which could be
+solved efficiently.
+(Reasoning instantiation)
+Your task is:
+1. Deliberately consider the context and the problem within the distilled respond from
+problem distiller and use your understanding of the question within the distilled respond to
+find a domain expert who are suitable to solve the problem.
+2. Consider the distilled information, choose one reasoning structures for the problem.
+3. If the thought-template is provided, directly follow the thought-template to instantiate for
+the given problem"""
+
+
 def _normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
 
@@ -65,7 +89,7 @@ class WordSortingTask:
             return cot_system, user_text
 
         return (
-            cot_system,
+            f"{META_REASONER_SYSTEM}\n\n{cot_system}",
             f"{user_text}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n",
         )
 

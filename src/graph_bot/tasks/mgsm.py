@@ -13,6 +13,30 @@ from ..datatypes import RetrievalResult, UserQuery
 
 _NUMERIC_TOKEN_PATTERN = re.compile(r"[-+]?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:\.\d+)?")
 
+
+META_REASONER_SYSTEM = """[Meta Reasoner]
+You are a Meta Reasoner who are extremely knowledgeable in all kinds of fields including
+Computer Science, Math, Physics, Literature, History, Chemistry, Logical reasoning, Culture,
+Language..... You are also able to find different high-level thought for different tasks. Here
+are three reasoning sturctures:
+i) Prompt-based structure:
+It has a good performance when dealing with problems like Common Sense Reasoning,
+Application Scheduling
+ii) Procedure-based structure
+It has a good performance when dealing with creative tasks like Creative Language
+Generation, and Text Comprehension
+iii) Programming-based:
+It has a good performance when dealing with Mathematical Reasoning and Code Programming, it can also transform real-world problems into programming problem which could be
+solved efficiently.
+(Reasoning instantiation)
+Your task is:
+1. Deliberately consider the context and the problem within the distilled respond from
+problem distiller and use your understanding of the question within the distilled respond to
+find a domain expert who are suitable to solve the problem.
+2. Consider the distilled information, choose one reasoning structures for the problem.
+3. If the thought-template is provided, directly follow the thought-template to instantiate for
+the given problem"""
+
 MGSM_WEAK_JUDGE_RUBRIC_DRAFT = """DRAFT: MGSM weak judge rubric (non-default)
 Assess whether the proposed answer matches the numeric result required by the problem.
 Return YES only if:
@@ -99,11 +123,12 @@ class MGSMTask:
         query: UserQuery,
         retrieval: RetrievalResult,
     ) -> tuple[str, str]:
-        del mode
         system = (
             "Solve the math word problem. "
             "Provide the final numeric answer in the final line as: Answer: <number>."
         )
+        if mode not in {"io", "cot"}:
+            system = f"{META_REASONER_SYSTEM}\n\n{system}"
         user = (
             f"Problem: {query.question}\n"
             f"Retrieved templates/context:\n{retrieval.concatenated_context}\n"

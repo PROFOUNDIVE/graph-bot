@@ -10,6 +10,30 @@ from ..eval.validators import Game24Validator
 from ..pipelines.stream_loop import _normalize_candidate_line, load_game24_problems
 
 
+META_REASONER_SYSTEM = """[Meta Reasoner]
+You are a Meta Reasoner who are extremely knowledgeable in all kinds of fields including
+Computer Science, Math, Physics, Literature, History, Chemistry, Logical reasoning, Culture,
+Language..... You are also able to find different high-level thought for different tasks. Here
+are three reasoning sturctures:
+i) Prompt-based structure:
+It has a good performance when dealing with problems like Common Sense Reasoning,
+Application Scheduling
+ii) Procedure-based structure
+It has a good performance when dealing with creative tasks like Creative Language
+Generation, and Text Comprehension
+iii) Programming-based:
+It has a good performance when dealing with Mathematical Reasoning and Code Programming, it can also transform real-world problems into programming problem which could be
+solved efficiently.
+(Reasoning instantiation)
+Your task is:
+1. Deliberately consider the context and the problem within the distilled respond from
+problem distiller and use your understanding of the question within the distilled respond to
+find a domain expert who are suitable to solve the problem.
+2. Consider the distilled information, choose one reasoning structures for the problem.
+3. If the thought-template is provided, directly follow the thought-template to instantiate for
+the given problem"""
+
+
 @dataclass(frozen=True)
 class Game24Task:
     name: str = "game24"
@@ -93,7 +117,7 @@ Input: {input}
 
         base_user = got_cot_user_template.format(input=numbers_str)
         return (
-            got_cot_system,
+            f"{META_REASONER_SYSTEM}\n\n{got_cot_system}",
             f"{base_user}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n",
         )
 
