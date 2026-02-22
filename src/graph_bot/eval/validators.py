@@ -7,11 +7,13 @@ import re
 import time
 import uuid
 from abc import abstractmethod
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
 
 from ..datatypes import ReasoningNode
 from ..interfaces import AbstractValidator
 from ..logsetting import logger
+from ..tools.python_executor import run_python
 
 
 def extract_game24_problem_numbers(text: str) -> list[int]:
@@ -241,11 +243,127 @@ class Game24Validator(BaseValidator):
 class ExecRepairValidator(BaseValidator):
     """Validator for code-augmented tasks using execution and repair loop."""
 
+    def __init__(self) -> None:
+        self._last_failure_reason: str | None = None
+
+    def failure_reason(self, answer: str, problem: str) -> str | None:
+        del answer
+        del problem
+        return self._last_failure_reason
+
+    @staticmethod
+    def _extract_python_block(raw_output: str) -> str | None:
+        match = re.search(r"```python\s*(.*?)```", raw_output, flags=re.DOTALL)
+        if not match:
+            return None
+        code = match.group(1).strip()
+        return code or None
+
+    @staticmethod
+    def _first_nonempty_line(text: str) -> str | None:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped
+        return None
+
+    @staticmethod
+    def _normalize_numeric_text(raw: str) -> str | None:
+        text = raw.strip().replace(",", "")
+        if not text:
+            return None
+        if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+            return None
+        try:
+            value = Decimal(text)
+        except InvalidOperation:
+            return None
+        normalized = format(value, "f")
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        if normalized in {"", "-0", "+0"}:
+            return "0"
+        return normalized
+
+    @staticmethod
+    def _normalize_whitespace_text(raw: str) -> str:
+        return " ".join(raw.strip().split())
+
     def validate(
         self, node: str | ReasoningNode, problem: str | None = None
     ) -> bool | float:
         """Validate using execution and repair logic."""
-        raise NotImplementedError("ExecRepairValidator not yet implemented")
+        del problem
+
+        if not isinstance(node, ReasoningNode):
+            self._last_failure_reason = "missing_raw_output"
+            return 0.0
+
+        raw_output = node.attributes.get("raw_output") if node.attributes else None
+        if not raw_output:
+            self._last_failure_reason = "missing_raw_output"
+            return 0.0
+
+        if not node.attributes or not node.attributes.get("problem"):
+            self._last_failure_reason = "missing_raw_output"
+            return 0.0
+
+        code = self._extract_python_block(raw_output)
+        if code is None:
+            self._last_failure_reason = "exec_no_output"
+            return 0.0
+
+        exec_result = run_python(
+            code,
+            timeout_sec=3.0,
+            max_stdout_chars=1000,
+            max_stderr_chars=1000,
+        )
+
+        if exec_result.timed_out:
+            self._last_failure_reason = "exec_timeout"
+            return 0.0
+
+        if (
+            exec_result.exit_code != 0
+            and "Execution blocked: banned token detected:" in exec_result.stderr
+        ):
+            self._last_failure_reason = "exec_banned_token"
+            return 0.0
+
+        if exec_result.exit_code != 0:
+            self._last_failure_reason = "exec_runtime_error"
+            return 0.0
+
+        output_line = self._first_nonempty_line(exec_result.stdout)
+        if output_line is None:
+            self._last_failure_reason = "exec_no_output"
+            return 0.0
+
+        exec_answer = re.sub(
+            r"^ANSWER\s*:\s*", "", output_line, flags=re.IGNORECASE
+        ).strip()
+        if not exec_answer:
+            self._last_failure_reason = "exec_no_output"
+            return 0.0
+
+        candidate = node.text.strip()
+        exec_numeric = self._normalize_numeric_text(exec_answer)
+        candidate_numeric = self._normalize_numeric_text(candidate)
+
+        if exec_numeric is not None and candidate_numeric is not None:
+            is_match = exec_numeric == candidate_numeric
+        else:
+            is_match = self._normalize_whitespace_text(exec_answer) == (
+                self._normalize_whitespace_text(candidate)
+            )
+
+        if is_match:
+            self._last_failure_reason = None
+            return 1.0
+
+        self._last_failure_reason = "exec_mismatch"
+        return 0.0
 
     def get_validator_name(self) -> str:
         return "exec_repair"
