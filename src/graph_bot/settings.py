@@ -25,7 +25,9 @@ class AppSettings(BaseSettings):
     retry_temperature_1: float = Field(default=0.0)
     retry_temperature_2: float = Field(default=0.6)
     retry_temperature_3: float = Field(default=0.9)
+    embedding_provider: str = Field(default="hybrid")
     embedding_model: str = Field(default="all-MiniLM-L6-v2")
+    openai_embedding_model: str = Field(default="text-embedding-3-large")
 
     # GraphRAG DB connection (placeholder)
     graphrag_uri: str = Field(default="sqlite:///graphrag.db")
@@ -55,6 +57,10 @@ class AppSettings(BaseSettings):
     policy_id: str = Field(
         default="semantic_topK_stats_rerank",
         description="Selection policy: semantic_only or semantic_topK_stats_rerank",
+    )
+    retrieval_backend: str = Field(
+        default="sparse_jaccard",
+        description="Retrieval backend: sparse_jaccard or dense_template",
     )
     validator_mode: str = Field(
         default="oracle",

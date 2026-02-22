@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 import typer
 
@@ -385,6 +385,13 @@ def stream(
         "--policy-id",
         help="Selection policy: semantic_only or semantic_topK_stats_rerank",
     ),
+    retrieval_backend: Optional[
+        Literal["sparse_jaccard", "dense_template"]
+    ] = typer.Option(
+        None,
+        "--retrieval-backend",
+        help="Retrieval backend: sparse_jaccard or dense_template",
+    ),
     validator_mode: Optional[str] = typer.Option(
         None,
         "--validator-mode",
@@ -427,6 +434,7 @@ def stream(
         mode=mode,
         use_edges=use_edges,
         policy_id=policy_id,
+        retrieval_backend=retrieval_backend,
         validator_mode=validator_mode or getattr(settings, "validator_mode", "oracle"),
         validator_model=final_validator_model,
         distiller_mode=distiller_mode,

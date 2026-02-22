@@ -7,6 +7,9 @@ models:
   llama3-8b-instruct:
     input_usd_per_1k: 0.0
     output_usd_per_1k: 0.0
+  text-embedding-3-large:
+    input_usd_per_1k: 0.00013
+    output_usd_per_1k: 0.0
   mock:
     input_usd_per_1k: 0.0
     output_usd_per_1k: 0.0

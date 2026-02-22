@@ -219,11 +219,19 @@ def test_run_continual_stream_uses_selected_task_and_metadata(tmp_path, monkeypa
             use_edges=None,
             policy_id=None,
             cross_task_retrieval=False,
+            retrieval_backend=None,
+            **kwargs,
         ):
             self.mode = mode
             self.policy_id = policy_id
             self.use_edges = use_edges
             self.cross_task_retrieval = cross_task_retrieval
+            # Swallow any new keyword that GraphRAGAdapter might pass
+            # (e.g., retrieval_backend) to avoid breaking test intent.
+            self.retrieval_backend = retrieval_backend
+            if kwargs:
+                # Keep any extra kwargs for forward-compatibility without failing.
+                pass
             self.retrieval_query = None
             self.inserted_trees = []
             adapter_box["instance"] = self

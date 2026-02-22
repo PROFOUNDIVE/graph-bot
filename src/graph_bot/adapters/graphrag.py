@@ -11,8 +11,16 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-from ..settings import settings
+from .embeddings import (
+    DeterministicHashEmbeddingProvider,
+    EmbeddingMeta,
+    EmbeddingProvider,
+    HybridEmbeddingProvider,
+    OpenAIEmbeddingProvider,
+    SentenceTransformerProvider,
+)
 from ..logsetting import logger
+from ..settings import settings
 from ..datatypes import (
     MetaGraph,
     PathEvaluation,
@@ -253,6 +261,17 @@ def _semantic_similarity(query_tokens: List[str], text: str) -> float:
     return overlap / union if union else 0.0
 
 
+def _cosine_similarity(query_vec: List[float], node_vec: List[float]) -> float:
+    if not query_vec or not node_vec:
+        return 0.0
+    q_norm = math.sqrt(sum(value * value for value in query_vec))
+    n_norm = math.sqrt(sum(value * value for value in node_vec))
+    if q_norm <= 0.0 or n_norm <= 0.0:
+        return 0.0
+    dot = sum(q * n for q, n in zip(query_vec, node_vec))
+    return dot / (q_norm * n_norm)
+
+
 class GraphRAGAdapter:
     """Stub adapter to persist and retrieve reasoning graphs.
 
@@ -265,6 +284,7 @@ class GraphRAGAdapter:
         mode: str | None = None,
         use_edges: bool | None = None,
         policy_id: str | None = None,
+        retrieval_backend: str | None = None,
         cross_task_retrieval: bool = False,
     ) -> None:
         self.uri = settings.graphrag_uri
@@ -272,8 +292,69 @@ class GraphRAGAdapter:
         self.mode = mode or settings.mode
         self.use_edges = use_edges if use_edges is not None else settings.use_edges
         self.policy_id = policy_id or settings.policy_id
+        self.retrieval_backend = retrieval_backend or settings.retrieval_backend
         self.cross_task_retrieval = cross_task_retrieval
+        self._embedding_provider = self._build_embedding_provider()
+        self._last_embedding_meta: EmbeddingMeta | None = None
+        self._query_embedding_cache: Dict[str, List[float]] = {}
+        self._node_embedding_cache: Dict[str, List[float]] = {}
         self._graph = self._load_or_init_graph()
+
+    def _build_embedding_provider(self) -> EmbeddingProvider:
+        provider_name = (settings.embedding_provider or "hybrid").lower()
+        if provider_name == "deterministic":
+            return DeterministicHashEmbeddingProvider()
+        if provider_name == "local":
+            return SentenceTransformerProvider(settings.embedding_model)
+        if provider_name == "openai":
+            return OpenAIEmbeddingProvider(settings.openai_embedding_model)
+        return HybridEmbeddingProvider(
+            primary=OpenAIEmbeddingProvider(settings.openai_embedding_model),
+            fallback=SentenceTransformerProvider(settings.embedding_model),
+        )
+
+    def _node_embedding(self, node: ReasoningNode) -> List[float]:
+        cached = self._node_embedding_cache.get(node.node_id)
+        if cached is not None:
+            return cached
+        vectors, meta = self._embedding_provider.encode([node.text])
+        self._last_embedding_meta = dict(meta)
+        if vectors.shape[0] == 0:
+            vector: List[float] = []
+        else:
+            vector = list(vectors[0].tolist())
+        self._node_embedding_cache[node.node_id] = vector
+        return vector
+
+    def _query_embedding(self, question: str) -> List[float]:
+        normalized = _normalize_text(question)
+        cached = self._query_embedding_cache.get(normalized)
+        if cached is not None:
+            return cached
+        vectors, meta = self._embedding_provider.encode([question])
+        self._last_embedding_meta = dict(meta)
+        if vectors.shape[0] == 0:
+            vector: List[float] = []
+        else:
+            vector = list(vectors[0].tolist())
+        self._query_embedding_cache[normalized] = vector
+        return vector
+
+    @property
+    def last_embedding_meta(self) -> EmbeddingMeta | None:
+        if self._last_embedding_meta is None:
+            return None
+        return dict(self._last_embedding_meta)
+
+    def _dense_seed_scores(
+        self, query: UserQuery, node_index: Dict[str, ReasoningNode]
+    ) -> Dict[str, float]:
+        query_vec = self._query_embedding(query.question)
+        node_scores: Dict[str, float] = {}
+        for node_id, node in node_index.items():
+            node_vec = self._node_embedding(node)
+            node_scores[node_id] = _cosine_similarity(query_vec, node_vec)
+        return node_scores
 
     def _load_or_init_graph(self) -> MetaGraph:
         if self.store_path.exists():
@@ -341,6 +422,8 @@ class GraphRAGAdapter:
 
     def import_graph(self, graph: MetaGraph) -> None:
         self._graph = graph
+        self._node_embedding_cache.clear()
+        self._query_embedding_cache.clear()
         self._touch_metadata()
         self._save_graph()
 
@@ -418,10 +501,37 @@ class GraphRAGAdapter:
                         attributes=attributes,
                     )
 
+            if not tree.edges and len(tree.nodes) >= 2 and not edge_index:
+                root_node_id = tree.root_id
+                if root_node_id not in node_id_map:
+                    root_node_id = tree.nodes[0].node_id
+
+                second_node_id: str | None = None
+                for node in tree.nodes:
+                    if node.node_id != root_node_id:
+                        second_node_id = node.node_id
+                        break
+
+                src = node_id_map.get(root_node_id)
+                dst = node_id_map.get(second_node_id) if second_node_id else None
+                if src and dst:
+                    key = (src, dst)
+                    if key not in edge_index:
+                        attributes = _ensure_edge_attributes(None, task=task)
+                        stats = attributes["stats"]
+                        stats["n_traverse"] = int(stats.get("n_traverse", 0)) + 1
+                        edge_index[key] = ReasoningEdge(
+                            src=src,
+                            dst=dst,
+                            relation="bootstrap",
+                            attributes=attributes,
+                        )
+
             count += 1
 
         self._graph.nodes = list(node_index.values())
         self._graph.edges = list(edge_index.values())
+        self._node_embedding_cache.clear()
         self._touch_metadata()
         self._save_graph()
         return count
@@ -558,11 +668,14 @@ class GraphRAGAdapter:
                     concatenated_context="",
                 )
 
-        query_tokens = _tokenize(query.question)
-        node_scores: Dict[str, float] = {
-            node_id: _semantic_similarity(query_tokens, node.text)
-            for node_id, node in node_index.items()
-        }
+        if self.retrieval_backend == "dense_template":
+            node_scores = self._dense_seed_scores(query, node_index)
+        else:
+            query_tokens = _tokenize(query.question)
+            node_scores = {
+                node_id: _semantic_similarity(query_tokens, node.text)
+                for node_id, node in node_index.items()
+            }
         sorted_nodes = sorted(
             node_scores.items(), key=lambda item: item[1], reverse=True
         )
