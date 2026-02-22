@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from graph_bot.datatypes import UserQuery
+from graph_bot.datatypes import RetrievalResult, UserQuery
 from graph_bot.tasks import registry
 
 
@@ -57,6 +57,41 @@ def test_wordsorting_extract_candidate_uses_first_non_empty_line() -> None:
     candidate = task.extract_candidate(raw_output, query)
 
     assert candidate == "c b a"
+
+
+def test_wordsorting_extract_candidate_answer_block_preferred_over_code() -> None:
+    task = registry.get_task("wordsorting")
+    query = UserQuery(
+        id="q1", question="Sort: pear apple banana", metadata={"task": "wordsorting"}
+    )
+    raw_output = (
+        "```python\n"
+        "# incorrect tentative output\n"
+        "print('banana apple pear')\n"
+        "```\n"
+        "<answer>apple banana pear</answer>\n"
+    )
+
+    candidate = task.extract_candidate(raw_output, query)
+
+    assert candidate == "apple banana pear"
+
+
+def test_wordsorting_graph_bot_exec_prompt_contract_exec_prompt() -> None:
+    task = registry.get_task("wordsorting")
+    query = UserQuery(
+        id="q1", question="Sort: pear apple banana", metadata={"task": "wordsorting"}
+    )
+    retrieval = RetrievalResult(query_id="q1", paths=[], concatenated_context="ctx")
+
+    system, user = task.build_solver_prompt("graph_bot_exec", query, retrieval)
+
+    assert "```python" in system
+    assert "<answer>" in system and "</answer>" in system
+    assert "no imports" in system.lower()
+    assert "file" in system.lower() and "network" in system.lower()
+    assert "print only" in system.lower()
+    assert "Retrieved templates/context:" in user
 
 
 def test_wordsorting_oracle_validate_matches_with_whitespace_normalization() -> None:

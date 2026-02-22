@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from ..datatypes import RetrievalResult, UserQuery
 
 _NUMERIC_TOKEN_PATTERN = re.compile(r"[-+]?(?:\d{1,3}(?:[ ,]\d{3})+|\d+)(?:\.\d+)?")
+_PYTHON_CODE_BLOCK_PATTERN = re.compile(r"```(?:python)?\s*.*?```", re.DOTALL)
+_ANSWER_BLOCK_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 
 
 META_REASONER_SYSTEM = """[Meta Reasoner]
@@ -127,7 +129,15 @@ class MGSMTask:
             "Solve the math word problem. "
             "Provide the final numeric answer in the final line as: Answer: <number>."
         )
-        if mode not in {"io", "cot"}:
+        if mode == "graph_bot_exec":
+            system = (
+                f"{META_REASONER_SYSTEM}\n\n{system}\n"
+                "For graph_bot_exec, output exactly two parts in order:\n"
+                "1) A fenced python code block (```python ... ```) that prints exactly one line with only the final answer.\n"
+                "2) A final <answer>...</answer> block containing the same final answer candidate.\n"
+                "Constraints: no imports; no file or network access; print only the final answer."
+            )
+        elif mode not in {"io", "cot"}:
             system = f"{META_REASONER_SYSTEM}\n\n{system}"
         user = (
             f"Problem: {query.question}\n"
@@ -137,7 +147,20 @@ class MGSMTask:
 
     def extract_candidate(self, raw_output: str, query: UserQuery) -> str:
         del query
-        token = _extract_final_numeric(raw_output)
+        answer_matches = list(_ANSWER_BLOCK_PATTERN.finditer(raw_output))
+        if answer_matches:
+            answer_text = answer_matches[-1].group(1).strip()
+            normalized_answer = _normalize_numeric_text(answer_text)
+            if normalized_answer is not None:
+                return normalized_answer
+            answer_token = _extract_final_numeric(answer_text)
+            if answer_token is not None:
+                normalized_token = _normalize_numeric_text(answer_token)
+                if normalized_token is not None:
+                    return normalized_token
+
+        text_without_code = _PYTHON_CODE_BLOCK_PATTERN.sub(" ", raw_output)
+        token = _extract_final_numeric(text_without_code)
         if token is None:
             return ""
         normalized = _normalize_numeric_text(token)

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from graph_bot.datatypes import UserQuery
+from graph_bot.datatypes import RetrievalResult, UserQuery
 from graph_bot.tasks import registry
 
 
@@ -100,6 +100,35 @@ def test_mgsm_oracle_validate_strict_numeric_equality_after_normalization() -> N
         False,
         "numeric_mismatch",
     )
+
+
+def test_mgsm_extract_candidate_prefers_answer_block_over_code_output() -> None:
+    task = registry.get_task("mgsm")
+    query = UserQuery(id="q", question="dummy", metadata={"task": "mgsm"})
+    raw_output = (
+        "```python\n"
+        "# wrong intermediate output\n"
+        "print(41)\n"
+        "```\n"
+        "<answer>42</answer>\n"
+    )
+
+    assert task.extract_candidate(raw_output, query=query) == "42"
+
+
+def test_mgsm_graph_bot_exec_prompt_contract() -> None:
+    task = registry.get_task("mgsm")
+    query = UserQuery(id="q", question="2 + 2 = ?", metadata={"task": "mgsm"})
+    retrieval = RetrievalResult(query_id="q", paths=[], concatenated_context="ctx")
+
+    system, user = task.build_solver_prompt("graph_bot_exec", query, retrieval)
+
+    assert "```python" in system
+    assert "<answer>" in system and "</answer>" in system
+    assert "no imports" in system.lower()
+    assert "file" in system.lower() and "network" in system.lower()
+    assert "print only" in system.lower()
+    assert "Retrieved templates/context:" in user
 
 
 def test_mgsm_weak_judge_rubric_draft_exists() -> None:

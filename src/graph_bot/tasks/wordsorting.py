@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -8,6 +9,9 @@ from typing import Any, Dict, Iterable
 from pydantic import BaseModel, Field
 
 from ..datatypes import RetrievalResult, UserQuery
+
+_PYTHON_CODE_BLOCK_PATTERN = re.compile(r"```(?:python)?\s*.*?```", re.DOTALL)
+_ANSWER_BLOCK_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 
 
 META_REASONER_SYSTEM = """[Meta Reasoner]
@@ -87,6 +91,18 @@ class WordSortingTask:
             return io_system, user_text
         if mode == "cot":
             return cot_system, user_text
+        if mode == "graph_bot_exec":
+            exec_system = (
+                f"{META_REASONER_SYSTEM}\n\n{cot_system}\n"
+                "For graph_bot_exec, output exactly two parts in order:\n"
+                "1) A fenced python code block (```python ... ```) that prints exactly one line with only the final answer.\n"
+                "2) A final <answer>...</answer> block containing the same final answer candidate.\n"
+                "Constraints: no imports; no file or network access; print only the final answer."
+            )
+            return (
+                exec_system,
+                f"{user_text}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n",
+            )
 
         return (
             f"{META_REASONER_SYSTEM}\n\n{cot_system}",
@@ -95,7 +111,14 @@ class WordSortingTask:
 
     def extract_candidate(self, raw_output: str, query: UserQuery) -> str:
         del query
-        for line in raw_output.splitlines():
+        answer_matches = list(_ANSWER_BLOCK_PATTERN.finditer(raw_output))
+        if answer_matches:
+            answer_text = _normalize_whitespace(answer_matches[-1].group(1))
+            if answer_text:
+                return answer_text
+
+        text_without_code = _PYTHON_CODE_BLOCK_PATTERN.sub("\n", raw_output)
+        for line in text_without_code.splitlines():
             candidate = _normalize_whitespace(line)
             if candidate:
                 return candidate
