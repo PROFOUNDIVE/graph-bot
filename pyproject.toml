@@ -1,6 +1,6 @@
 [project]
 name = "graph-bot"
-version = "0.5.0"
+version = "0.6.0"
 description = "Graph-augmented Buffer of Thoughts"
 readme = "README.md"
 requires-python = ">=3.11"
