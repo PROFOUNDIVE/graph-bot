@@ -5,6 +5,7 @@ import json
 import re
 import signal
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -14,6 +15,7 @@ from ..adapters.distiller import get_distiller
 from ..adapters.graphrag import GraphRAGAdapter
 from ..datatypes import (
     PathEvaluation,
+    ReasoningNode,
     RetrievalResult,
     StreamCallMetrics,
     StreamProblemMetrics,
@@ -22,6 +24,7 @@ from ..datatypes import (
 from ..eval.validators import BaseValidator, get_validator
 from ..interfaces import AbstractDistiller
 from ..pipelines.metrics_logger import StreamMetricsLogger
+from ..tools.python_executor import run_python
 from ..utils.pricing import calculate_cost, load_pricing_table
 from ..utils.slack import send_slack_notification
 from ..utils.manifest import RunManifest
@@ -75,6 +78,7 @@ def run_continual_stream(
     mode: str | None = None,
     use_edges: bool | None = None,
     policy_id: str | None = None,
+    retrieval_backend: str | None = None,
     validator_mode: str = "oracle",
     validator_model: str | None = None,
     validator_gated_update: bool = True,
@@ -99,6 +103,7 @@ def run_continual_stream(
         mode=mode,
         use_edges=use_edges,
         policy_id=policy_id,
+        retrieval_backend=retrieval_backend,
         cross_task_retrieval=cross_task_retrieval,
     )
     validator = get_validator(validator_mode, validator_model)
@@ -143,9 +148,13 @@ def run_continual_stream(
 
                 active_mode = mode or settings.mode
                 active_policy_id = policy_id or settings.policy_id
+                active_retrieval_backend = (
+                    retrieval_backend or settings.retrieval_backend
+                )
 
                 adapter.mode = active_mode
                 adapter.policy_id = active_policy_id
+                adapter.retrieval_backend = active_retrieval_backend
 
                 is_baseline = active_mode in {"io", "cot"}
 
@@ -214,6 +223,15 @@ def run_continual_stream(
                             error_type=ret_error_type,
                         )
                     )
+                    # Use a safe attribute access to tolerate adapter stubs that may not
+                    # implement `last_embedding_meta`. If absent or falsy, default to an empty dict.
+                    embedding_meta = getattr(adapter, "last_embedding_meta", None) or {}
+                    embedding_provider = str(
+                        embedding_meta.get("provider") or "unknown"
+                    )
+                    embedding_model_actual = str(
+                        embedding_meta.get("model") or settings.embedding_model
+                    )
                     metrics.log_token_event(
                         {
                             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
@@ -223,7 +241,11 @@ def run_continual_stream(
                             "event_type": "rag_retrieval",
                             "operation": "retrieve",
                             "status": "success" if not ret_error_type else "skipped",
-                            "model": settings.embedding_model,
+                            "model": (
+                                "sparse_jaccard"
+                                if active_retrieval_backend != "dense_template"
+                                else embedding_model_actual
+                            ),
                             "latency_ms": int(round(latency_ret_ms)),
                             "run_id": f"{metrics.run_id}:{problem_id}",
                             "span_id": call_id_retrieve,
@@ -231,6 +253,15 @@ def run_continual_stream(
                             "metadata": {
                                 "pricing_version": "v0",
                                 "mode": active_mode,
+                                "retrieval_backend": active_retrieval_backend,
+                                **(
+                                    {
+                                        "embedding_provider": embedding_provider,
+                                        "embedding_model_actual": embedding_model_actual,
+                                    }
+                                    if active_retrieval_backend == "dense_template"
+                                    else {}
+                                ),
                                 "task": query_metadata.get("task", task_spec.name),
                                 "distilled_question": distilled_query.question,
                                 "packed_context_tokens": (
@@ -251,6 +282,51 @@ def run_continual_stream(
                             "cost_usd": 0.0,
                         }
                     )
+
+                    if (
+                        active_retrieval_backend == "dense_template"
+                        and not ret_error_type
+                    ):
+                        embedding_tokens = (
+                            _maybe_int(embedding_meta.get("usage_tokens")) or 0
+                        )
+                        embedding_latency_ms = (
+                            _maybe_float(embedding_meta.get("latency_ms")) or 0.0
+                        )
+                        embedding_cost_usd = (
+                            _maybe_float(embedding_meta.get("cost_usd")) or 0.0
+                        )
+                        metrics.log_token_event(
+                            {
+                                "timestamp": datetime.datetime.utcnow().isoformat()
+                                + "Z",
+                                "stream_run_id": metrics.run_id,
+                                "problem_id": problem_id,
+                                "t": t,
+                                "event_type": "embedding",
+                                "operation": "embed",
+                                "status": "success",
+                                "model": embedding_model_actual,
+                                "latency_ms": int(round(embedding_latency_ms)),
+                                "run_id": f"{metrics.run_id}:{problem_id}",
+                                "span_id": metrics.new_call_id(),
+                                "component": "rag_infra",
+                                "metadata": {
+                                    "pricing_version": "v0",
+                                    "mode": active_mode,
+                                    "retrieval_backend": "dense_template",
+                                    "embedding_provider": embedding_provider,
+                                    "embedding_model_actual": embedding_model_actual,
+                                    "task": query_metadata.get("task", task_spec.name),
+                                },
+                                "usage": {
+                                    "prompt_tokens": 0,
+                                    "completion_tokens": 0,
+                                    "total_tokens": embedding_tokens,
+                                },
+                                "cost_usd": embedding_cost_usd,
+                            }
+                        )
 
                     if not is_baseline:
                         adapter.register_usage(retrieval.paths)
@@ -875,8 +951,6 @@ def _solve_with_retries(
         settings.retry_temperature_3,
     ]
 
-    system, user_template = task.build_solver_prompt(mode, query, retrieval)
-
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_tokens = 0
@@ -895,18 +969,30 @@ def _solve_with_retries(
     last_raw_output: str | None = None
     last_answer_text = ""
     attempts_used = 0
+    max_retry_output_chars = 1000
 
     for attempt_index in range(1, settings.retry_max_attempts + 1):
         attempts_used = attempt_index
         temperature = temperatures[min(attempt_index - 1, len(temperatures) - 1)]
 
+        attempt_mode = mode
+        if mode == "graph_bot_exec":
+            if attempt_index == settings.retry_max_attempts:
+                attempt_mode = "graph_bot"
+            else:
+                attempt_mode = "graph_bot_exec"
+
+        system, user_template = task.build_solver_prompt(attempt_mode, query, retrieval)
+
         call_id_solve = metrics.new_call_id()
 
-        prompt_variant = f"{mode}:base" if attempt_index == 1 else f"{mode}:retry"
+        prompt_variant = (
+            f"{attempt_mode}:base" if attempt_index == 1 else f"{attempt_mode}:retry"
+        )
 
         current_user = user_template
         if attempt_index > 1 and last_reason:
-            prev = (last_raw_output or "").strip()
+            prev = (last_raw_output or "").strip()[:max_retry_output_chars]
             retry_line = (
                 "\n\nPrevious attempt was invalid.\n"
                 f"Reason: {last_reason}\n"
@@ -985,16 +1071,148 @@ def _solve_with_retries(
         precheck_failure_reason = None
         validator_name = validator.get_validator_name()
 
+        exec_status = "skipped"
+        exec_error_type: str | None = None
+        exec_latency_ms = 0.0
+        exec_failure_reason: str | None = None
+        exec_answer: str | None = None
+        exec_candidate_match: bool | None = None
+        code_block_present = False
+
+        if solve_error_type is None and attempt_mode == "graph_bot_exec":
+            start_exec = time.perf_counter()
+            code = _extract_python_fenced_block(raw_output)
+            if code is None:
+                exec_failure_reason = "exec_no_output"
+                exec_status = "failed"
+            else:
+                code_block_present = True
+                exec_result = run_python(
+                    code,
+                    timeout_sec=3.0,
+                    max_stdout_chars=1000,
+                    max_stderr_chars=1000,
+                )
+                if exec_result.timed_out:
+                    exec_failure_reason = "exec_timeout"
+                    exec_status = "failed"
+                elif (
+                    exec_result.exit_code != 0
+                    and "Execution blocked: banned token detected:"
+                    in exec_result.stderr
+                ):
+                    exec_failure_reason = "exec_banned_token"
+                    exec_status = "failed"
+                elif exec_result.exit_code != 0:
+                    exec_failure_reason = "exec_runtime_error"
+                    exec_status = "failed"
+                else:
+                    output_line = _first_nonempty_line(exec_result.stdout)
+                    if output_line is None:
+                        exec_failure_reason = "exec_no_output"
+                        exec_status = "failed"
+                    else:
+                        exec_answer = re.sub(
+                            r"^ANSWER\s*:\s*", "", output_line, flags=re.IGNORECASE
+                        ).strip()
+                        if not exec_answer:
+                            exec_failure_reason = "exec_no_output"
+                            exec_status = "failed"
+                        else:
+                            exec_candidate_match = _answers_match(
+                                exec_answer, candidate_line
+                            )
+                            if not exec_candidate_match:
+                                exec_failure_reason = "exec_mismatch"
+                                exec_status = "failed"
+                            else:
+                                exec_status = "success"
+            exec_latency_ms = (time.perf_counter() - start_exec) * 1000.0
+
+            call_id_exec = metrics.new_call_id()
+            metrics.log_call(
+                StreamCallMetrics(
+                    call_id=call_id_exec,
+                    parent_id=call_id_solve,
+                    t=t,
+                    problem_id=problem_id,
+                    operation="exec",
+                    attempt_index=attempt_index,
+                    temperature=temperature,
+                    validator_passed=exec_status == "success",
+                    failure_reason=exec_failure_reason,
+                    prompt_variant=prompt_variant,
+                    latency_ms=exec_latency_ms,
+                    api_cost_usd=0.0,
+                    error_type=exec_error_type,
+                    raw_output=raw_output,
+                    candidate_line=candidate_line,
+                    normalization=normalization,
+                    precheck_failure_reason=precheck_failure_reason,
+                )
+            )
+            metrics.log_token_event(
+                {
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                    "stream_run_id": metrics.run_id,
+                    "problem_id": problem_id,
+                    "t": t,
+                    "event_type": "tool_call",
+                    "operation": "exec",
+                    "status": exec_status,
+                    "model": "python",
+                    "latency_ms": int(round(exec_latency_ms)),
+                    "run_id": f"{metrics.run_id}:{problem_id}",
+                    "span_id": call_id_exec,
+                    "component": "pipeline",
+                    "metadata": {
+                        "pricing_version": "v0",
+                        "code_block_present": code_block_present,
+                        "failure_reason": exec_failure_reason,
+                        "exec_answer": exec_answer,
+                        "exec_candidate_match": exec_candidate_match,
+                    },
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "cost_usd": 0.0,
+                }
+            )
+
+            if exec_status != "success":
+                reason = exec_failure_reason
+
         if solve_error_type is None:
             start_val = time.perf_counter()
-            if validator_name == "oracle":
+            if reason is not None:
+                attempt_passed = False
+            elif validator_name == "oracle":
                 attempt_passed, reason = task.oracle_validate(
                     candidate_line, query, problem
                 )
                 answer_text = candidate_line
             else:
+                task_name = str(
+                    (query.metadata or {}).get("task", getattr(task, "name", ""))
+                )
+                validator_node = ReasoningNode(
+                    node_id=f"{problem_id}:attempt-{attempt_index}",
+                    text=candidate_line,
+                    type="answer",
+                    attributes={
+                        "problem": query.question,
+                        "raw_output": raw_output,
+                        "task": task_name,
+                        "metrics": metrics,
+                        "stream_run_id": metrics.run_id,
+                        "problem_id": problem_id,
+                        "t": t,
+                    },
+                )
                 attempt_passed = bool(
-                    validator.validate(candidate_line, query.question)
+                    validator.validate(validator_node, query.question)
                 )
                 if attempt_passed:
                     answer_text = candidate_line
@@ -1158,3 +1376,51 @@ def _solve_with_retrieval(query: UserQuery, retrieval) -> str:
     """
     _ = (query, retrieval)
     return "RETRIEVAL_PLACEHOLDER"
+
+
+def _extract_python_fenced_block(raw_output: str) -> str | None:
+    match = re.search(r"```python\s*(.*?)```", raw_output, flags=re.DOTALL)
+    if not match:
+        return None
+    code = match.group(1).strip()
+    return code or None
+
+
+def _first_nonempty_line(text: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _normalize_numeric_text(raw: str) -> str | None:
+    text = raw.strip().replace(",", "")
+    if not text:
+        return None
+    if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        return None
+    normalized = format(value, "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    if normalized in {"", "-0", "+0"}:
+        return "0"
+    return normalized
+
+
+def _normalize_whitespace_text(raw: str) -> str:
+    return " ".join(raw.strip().split())
+
+
+def _answers_match(exec_answer: str, candidate: str) -> bool:
+    exec_numeric = _normalize_numeric_text(exec_answer)
+    candidate_numeric = _normalize_numeric_text(candidate)
+    if exec_numeric is not None and candidate_numeric is not None:
+        return exec_numeric == candidate_numeric
+    return _normalize_whitespace_text(exec_answer) == _normalize_whitespace_text(
+        candidate
+    )
