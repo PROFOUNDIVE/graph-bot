@@ -55,6 +55,9 @@ class StreamCumulativeMetrics(BaseModel):
     cost_per_solved: float
     contamination_rate: float | None = None
     poisoned_update_rate: float | None = None
+    # Optional percentile latency measurements for the stream
+    p50_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
 
 
 class SeedData(BaseModel):
