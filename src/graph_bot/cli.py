@@ -375,7 +375,9 @@ def stream(
         help="Allow retrieval across task boundaries (default: task-scoped retrieval).",
     ),
     mode: Optional[str] = typer.Option(
-        None, "--mode", help="Execution mode: graph_bot or flat_template_rag"
+        None,
+        "--mode",
+        help="Execution mode: graph_bot, graph_bot_exec, io, cot, bot, got, tot, flat_template_rag",
     ),
     use_edges: Optional[bool] = typer.Option(
         None, "--use-edges", help="Use graph edges for path construction"
