@@ -30,6 +30,18 @@ from ..utils.slack import send_slack_notification
 from ..utils.manifest import RunManifest
 
 
+MODE_CAPABILITIES: dict[str, dict[str, bool]] = {
+    "graph_bot": {"uses_retrieval": True, "updates_memory": True},
+    "graph_bot_exec": {"uses_retrieval": True, "updates_memory": True},
+    "flat_template_rag": {"uses_retrieval": True, "updates_memory": True},
+    "bot": {"uses_retrieval": True, "updates_memory": True},
+    "io": {"uses_retrieval": False, "updates_memory": False},
+    "cot": {"uses_retrieval": False, "updates_memory": False},
+    "got": {"uses_retrieval": False, "updates_memory": False},
+    "tot": {"uses_retrieval": False, "updates_memory": False},
+}
+
+
 class Game24Problem(BaseModel):
     """Game of 24 problem format."""
 
@@ -151,25 +163,47 @@ def run_continual_stream(
                 active_retrieval_backend = (
                     retrieval_backend or settings.retrieval_backend
                 )
+                mode_capability = MODE_CAPABILITIES.get(active_mode)
+                if mode_capability is None:
+                    supported_modes = ", ".join(sorted(MODE_CAPABILITIES))
+                    raise ValueError(
+                        f"Unsupported mode '{active_mode}'. Supported modes: {supported_modes}"
+                    )
+                uses_retrieval = bool(mode_capability["uses_retrieval"])
+                updates_memory = bool(mode_capability["updates_memory"])
 
-                adapter.mode = active_mode
+                adapter_mode = active_mode
+                if active_mode == "bot":
+                    adapter_mode = "flat_template_rag"
+                    adapter.use_edges = False
+
+                adapter.mode = adapter_mode
                 adapter.policy_id = active_policy_id
                 adapter.retrieval_backend = active_retrieval_backend
-
-                is_baseline = active_mode in {"io", "cot"}
 
                 try:
                     signal.setitimer(signal.ITIMER_REAL, settings.execution_timeout_sec)
 
                     distilled_query = query
-                    if not is_baseline:
+                    if uses_retrieval:
                         start_distill = time.perf_counter()
+                        original_question = query.question
                         distilled_question = query.question
                         if task_spec.name == "game24":
                             distilled_question = distiller.distill_query(query.question)
                         distilled_query = query.model_copy(
                             update={"question": distilled_question}
                         )
+
+                        if active_mode == "bot":
+                            updated_metadata = dict(query.metadata or {})
+                            updated_metadata.setdefault(
+                                "original_question", original_question
+                            )
+                            updated_metadata["distilled_question"] = distilled_question
+                            query = query.model_copy(
+                                update={"metadata": updated_metadata}
+                            )
                         latency_distill = (time.perf_counter() - start_distill) * 1000.0
                         metrics.log_token_event(
                             {
@@ -196,7 +230,7 @@ def run_continual_stream(
                             }
                         )
 
-                    if is_baseline:
+                    if not uses_retrieval:
                         retrieval = RetrievalResult(
                             query_id=query.id, paths=[], concatenated_context=""
                         )
@@ -204,9 +238,8 @@ def run_continual_stream(
                         ret_error_type = "skipped_mode"
                     else:
                         start_ret = time.perf_counter()
-                        retrieval = adapter.retrieve_paths(
-                            distilled_query, k=settings.top_k_paths
-                        )
+                        k_paths = 1 if active_mode == "bot" else settings.top_k_paths
+                        retrieval = adapter.retrieve_paths(distilled_query, k=k_paths)
                         latency_ret_ms = (time.perf_counter() - start_ret) * 1000.0
                         ret_error_type = None
 
@@ -328,7 +361,7 @@ def run_continual_stream(
                             }
                         )
 
-                    if not is_baseline:
+                    if uses_retrieval:
                         adapter.register_usage(retrieval.paths)
 
                     reuse_count = sum(len(p.node_ids) for p in retrieval.paths)
@@ -339,26 +372,48 @@ def run_continual_stream(
                     if reuse_count > 0:
                         contamination_rate = contaminated / reuse_count
 
-                    (
-                        answer_text,
-                        aggregate_usage,
-                        solved,
-                        solved_attempt,
-                        _last_reason,
-                        attempts_used,
-                    ) = _solve_with_retries(
-                        task=task_spec,
-                        problem=problem,
-                        query=query,
-                        retrieval=retrieval,
-                        validator=validator,
-                        metrics=metrics,
-                        pricing_table=pricing_table,
-                        parent_call_id=call_id_retrieve,
-                        t=t,
-                        problem_id=problem_id,
-                        mode=active_mode,
-                    )
+                    if active_mode in {"got", "tot"}:
+                        (
+                            answer_text,
+                            aggregate_usage,
+                            solved,
+                            solved_attempt,
+                            _last_reason,
+                            attempts_used,
+                        ) = _solve_with_search_baseline(
+                            task=task_spec,
+                            problem=problem,
+                            query=query,
+                            retrieval=retrieval,
+                            validator=validator,
+                            metrics=metrics,
+                            pricing_table=pricing_table,
+                            parent_call_id=call_id_retrieve,
+                            t=t,
+                            problem_id=problem_id,
+                            mode=active_mode,
+                        )
+                    else:
+                        (
+                            answer_text,
+                            aggregate_usage,
+                            solved,
+                            solved_attempt,
+                            _last_reason,
+                            attempts_used,
+                        ) = _solve_with_retries(
+                            task=task_spec,
+                            problem=problem,
+                            query=query,
+                            retrieval=retrieval,
+                            validator=validator,
+                            metrics=metrics,
+                            pricing_table=pricing_table,
+                            parent_call_id=call_id_retrieve,
+                            t=t,
+                            problem_id=problem_id,
+                            mode=active_mode,
+                        )
 
                     solve_prompt_tokens = _maybe_int(
                         aggregate_usage.get("prompt_tokens")
@@ -369,7 +424,7 @@ def run_continual_stream(
                     solve_tokens_total = _maybe_int(aggregate_usage.get("total_tokens"))
                     solve_latency_ms = _maybe_float(aggregate_usage.get("latency_ms"))
 
-                    if not is_baseline:
+                    if updates_memory:
                         evaluations = []
                         for path in retrieval.paths:
                             evaluations.append(
@@ -392,6 +447,7 @@ def run_continual_stream(
                                 metrics=metrics,
                                 t=t,
                                 problem_id=problem_id,
+                                mode=active_mode,
                                 answer_text=answer_text,
                                 solved=solved,
                                 query=query,
@@ -689,6 +745,7 @@ def _insert_solution_template(
     metrics: StreamMetricsLogger,
     t: int,
     problem_id: str,
+    mode: str,
     answer_text: str,
     solved: bool,
     query: UserQuery,
@@ -794,7 +851,7 @@ def _insert_solution_template(
 
     # 2. Identify source edges if retrieval was used
     edges: list[ReasoningEdge] = []
-    if retrieval and retrieval.paths:
+    if mode != "bot" and retrieval and retrieval.paths:
         for path in retrieval.paths:
             if not path.node_ids:
                 continue
@@ -925,6 +982,316 @@ def _precheck_candidate(
         return "wrong_numbers"
 
     return None
+
+
+def _extract_game24_numbers(problem: Any, query: UserQuery) -> list[float]:
+    numbers = None
+    if isinstance(problem, dict):
+        numbers = problem.get("numbers")
+    elif hasattr(problem, "numbers"):
+        numbers = getattr(problem, "numbers", None)
+
+    if isinstance(numbers, list) and len(numbers) > 0:
+        try:
+            return [float(value) for value in numbers]
+        except Exception:
+            pass
+
+    parsed = re.findall(r"(-?\d+\.?\d*)", query.question)
+    return [float(token) for token in parsed[:4]]
+
+
+def _candidate_from_search_state(state: dict[str, object] | None) -> str:
+    if not isinstance(state, dict):
+        return ""
+    items = state.get("items")
+    if not isinstance(items, list) or len(items) != 1:
+        return ""
+    item = items[0]
+    if not isinstance(item, dict):
+        return ""
+    expr = item.get("expr")
+    if isinstance(expr, str):
+        return expr.strip()
+    value = item.get("value")
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _solve_with_search_baseline(
+    *,
+    task: Any,
+    problem: Any,
+    query: UserQuery,
+    retrieval,
+    validator: BaseValidator,
+    metrics: StreamMetricsLogger,
+    pricing_table: dict[str, Any],
+    parent_call_id: str,
+    t: int,
+    problem_id: str,
+    mode: str,
+) -> tuple[str, dict[str, object], bool, int | None, str | None, int]:
+    del retrieval
+    del validator
+
+    from ..baselines.got.game24_search import run_search_variant
+    from ..baselines.got.llm_moves import build_llm_client
+    from ..settings import settings
+
+    temperatures = [
+        settings.retry_temperature_1,
+        settings.retry_temperature_2,
+        settings.retry_temperature_3,
+    ]
+    client = build_llm_client()
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
+    total_latency_ms = 0.0
+
+    last_reason: str | None = None
+    last_answer_text = ""
+    attempts_used = 0
+
+    for attempt_index in range(1, settings.retry_max_attempts + 1):
+        attempts_used = attempt_index
+        temperature = temperatures[min(attempt_index - 1, len(temperatures) - 1)]
+        call_id_solve = metrics.new_call_id()
+        prompt_variant = (
+            f"{mode}:search_base" if attempt_index == 1 else f"{mode}:search_retry"
+        )
+
+        candidate_line = ""
+        solve_error_type: str | None = None
+        search_usage: dict[str, object] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "latency_ms": 0.0,
+        }
+
+        try:
+            numbers = _extract_game24_numbers(problem, query)
+            search_result = run_search_variant(
+                variant=mode,
+                numbers=numbers,
+                client=client,
+                temperature=temperature,
+            )
+            search_usage = dict(search_result.aggregate_usage)
+
+            for call in search_result.llm_calls:
+                prompt_tokens = call.prompt_tokens or 0
+                completion_tokens = call.completion_tokens or 0
+                call_total_tokens = call.total_tokens or (
+                    prompt_tokens + completion_tokens
+                )
+                call_latency_ms = call.latency_ms or 0.0
+                call_cost_usd = calculate_cost(
+                    pricing_table=pricing_table,
+                    model_name=settings.llm_model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                metrics.log_token_event(
+                    {
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                        "stream_run_id": metrics.run_id,
+                        "problem_id": problem_id,
+                        "t": t,
+                        "event_type": "llm_completion",
+                        "operation": f"search_{call.operation}",
+                        "status": "success",
+                        "model": settings.llm_model,
+                        "latency_ms": int(round(call_latency_ms)),
+                        "run_id": f"{metrics.run_id}:{problem_id}",
+                        "span_id": metrics.new_call_id(),
+                        "component": "pipeline",
+                        "metadata": {
+                            "pricing_version": "v0",
+                            "mode": mode,
+                        },
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": call_total_tokens,
+                        },
+                        "cost_usd": float(call_cost_usd),
+                    }
+                )
+
+            terminal_state = (
+                search_result.best_terminal_state or search_result.best_state
+            )
+            candidate_line = _candidate_from_search_state(terminal_state)
+        except TimeoutException:
+            raise
+        except Exception as exc:
+            solve_error_type = type(exc).__name__
+
+        prompt_tokens = _maybe_int(search_usage.get("prompt_tokens"))
+        completion_tokens = _maybe_int(search_usage.get("completion_tokens"))
+        attempt_total_tokens = _maybe_int(search_usage.get("total_tokens"))
+        latency_ms = _maybe_float(search_usage.get("latency_ms"))
+
+        total_prompt_tokens += prompt_tokens or 0
+        total_completion_tokens += completion_tokens or 0
+        total_tokens += attempt_total_tokens or 0
+        total_latency_ms += latency_ms or 0.0
+
+        answer_text = candidate_line
+        raw_output = candidate_line
+        attempt_passed = False
+        reason: str | None
+        if solve_error_type is None:
+            start_val = time.perf_counter()
+            attempt_passed, reason = task.oracle_validate(
+                candidate_line, query, problem
+            )
+            latency_val_ms = (time.perf_counter() - start_val) * 1000.0
+        else:
+            reason = "solve_error"
+            latency_val_ms = 0.0
+
+        last_reason = reason
+        last_answer_text = answer_text
+
+        attempt_api_cost_usd = calculate_cost(
+            pricing_table=pricing_table,
+            model_name=settings.llm_model,
+            prompt_tokens=prompt_tokens or 0,
+            completion_tokens=completion_tokens or 0,
+        )
+
+        metrics.log_call(
+            StreamCallMetrics(
+                call_id=call_id_solve,
+                parent_id=parent_call_id,
+                t=t,
+                problem_id=problem_id,
+                operation="solve",
+                attempt_index=attempt_index,
+                temperature=temperature,
+                validator_passed=bool(attempt_passed),
+                failure_reason=reason,
+                prompt_variant=prompt_variant,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=attempt_total_tokens,
+                latency_ms=latency_ms or 0.0,
+                api_cost_usd=attempt_api_cost_usd,
+                error_type=solve_error_type,
+                raw_output=raw_output,
+                candidate_line=candidate_line,
+                normalization="search_terminal_expr",
+                precheck_failure_reason=None,
+            )
+        )
+
+        metrics.log_token_event(
+            {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "stream_run_id": metrics.run_id,
+                "problem_id": problem_id,
+                "t": t,
+                "event_type": "llm_completion",
+                "operation": "solve",
+                "status": "failed" if solve_error_type else "success",
+                "model": settings.llm_model,
+                "latency_ms": int(round(latency_ms or 0.0)),
+                "run_id": f"{metrics.run_id}:{problem_id}",
+                "span_id": call_id_solve,
+                "component": "pipeline",
+                "metadata": {"pricing_version": "v0", "mode": mode},
+                "usage": {
+                    "prompt_tokens": prompt_tokens or 0,
+                    "completion_tokens": completion_tokens or 0,
+                    "total_tokens": attempt_total_tokens or 0,
+                },
+                "cost_usd": float(attempt_api_cost_usd),
+            }
+        )
+
+        call_id_validate = metrics.new_call_id()
+        validate_error_type = (
+            None if solve_error_type is None else "skipped_solve_error"
+        )
+        metrics.log_call(
+            StreamCallMetrics(
+                call_id=call_id_validate,
+                parent_id=call_id_solve,
+                t=t,
+                problem_id=problem_id,
+                operation="validate",
+                attempt_index=attempt_index,
+                temperature=temperature,
+                validator_passed=bool(attempt_passed),
+                failure_reason=reason,
+                prompt_variant=prompt_variant,
+                latency_ms=latency_val_ms,
+                api_cost_usd=0.0,
+                error_type=validate_error_type,
+                raw_output=raw_output,
+                candidate_line=candidate_line,
+                normalization="search_terminal_expr",
+                precheck_failure_reason=None,
+            )
+        )
+        metrics.log_token_event(
+            {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "stream_run_id": metrics.run_id,
+                "problem_id": problem_id,
+                "t": t,
+                "event_type": "tool_call",
+                "operation": "validate",
+                "status": "failed" if validate_error_type else "success",
+                "model": "oracle",
+                "latency_ms": int(round(latency_val_ms)),
+                "run_id": f"{metrics.run_id}:{problem_id}",
+                "span_id": call_id_validate,
+                "component": "evaluator",
+                "metadata": {"pricing_version": "v0"},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "cost_usd": 0.0,
+            }
+        )
+
+        if attempt_passed:
+            return (
+                answer_text,
+                {
+                    "prompt_tokens": total_prompt_tokens,
+                    "completion_tokens": total_completion_tokens,
+                    "total_tokens": total_tokens,
+                    "latency_ms": total_latency_ms,
+                },
+                True,
+                attempt_index,
+                None,
+                attempts_used,
+            )
+
+    return (
+        last_answer_text,
+        {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
+            "latency_ms": total_latency_ms,
+        },
+        False,
+        None,
+        last_reason,
+        attempts_used,
+    )
 
 
 def _solve_with_retries(

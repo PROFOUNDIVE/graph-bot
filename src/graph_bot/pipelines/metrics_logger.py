@@ -18,6 +18,9 @@ class StreamMetricsLogger:
         self._stream_path = self._out_dir / f"{run_id}.stream.jsonl"
         self._token_events_path = self._out_dir / f"{run_id}.token_events.jsonl"
 
+        # Latency tracking for percentile reporting (optional, enhances stream metrics)
+        self._latency_history_ms: list[float] = []
+
         self._cumulative_solved = 0
         self._cumulative_cost_usd = 0.0
         self._cumulative_contaminated = 0
@@ -52,6 +55,12 @@ class StreamMetricsLogger:
 
     def log_problem(self, event: StreamProblemMetrics) -> StreamCumulativeMetrics:
         self._append_jsonl(self._problems_path, event.model_dump())
+        # Record latency for percentile metrics (if available)
+        if event.latency_total_ms is not None:
+            try:
+                self._latency_history_ms.append(float(event.latency_total_ms))
+            except Exception:
+                pass
 
         if event.solved:
             self._cumulative_solved += 1
@@ -80,6 +89,28 @@ class StreamMetricsLogger:
                 self._cumulative_poisoned_updates / self._cumulative_updates
             )
 
+        # Compute percentile latencies if we have enough data
+        p50_latency = None
+        p95_latency = None
+        if self._latency_history_ms:
+            data = sorted(self._latency_history_ms)
+            def _percentile(vals: list[float], q: float) -> float:
+                if not vals:
+                    return None  # type: ignore
+                if q <= 0:
+                    return vals[0]
+                if q >= 100:
+                    return vals[-1]
+                k = (len(vals) - 1) * (q / 100.0)
+                f = int(k)
+                c = k - f
+                if f + 1 < len(vals):
+                    return vals[f] * (1 - c) + vals[f + 1] * c
+                else:
+                    return vals[f]
+            p50_latency = _percentile(data, 50)
+            p95_latency = _percentile(data, 95)
+
         cumulative = StreamCumulativeMetrics(
             t=event.t,
             cumulative_solved=self._cumulative_solved,
@@ -87,6 +118,8 @@ class StreamMetricsLogger:
             cost_per_solved=cost_per_solved,
             contamination_rate=contamination_rate,
             poisoned_update_rate=cumulative_poisoned_rate,
+            p50_latency_ms=p50_latency,
+            p95_latency_ms=p95_latency,
         )
         self._append_jsonl(self._stream_path, cumulative.model_dump())
         return cumulative
