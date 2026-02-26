@@ -1,3 +1,6 @@
 [submodule "libs/buffer-of-thought-llm"]
 	path = libs/buffer-of-thought-llm
 	url = https://github.com/PROFOUNDIVE/buffer-of-thought-llm
+[submodule "libs/graph-of-thoughts"]
+	path = libs/graph-of-thoughts
+	url = https://github.com/PROFOUNDIVE/graph-of-thoughts.git

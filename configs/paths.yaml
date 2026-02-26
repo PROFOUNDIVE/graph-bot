@@ -1,5 +1,6 @@
 libs:
   bot_root: "libs/buffer-of-thought-llm"
+  got_root: "libs/graph-of-thoughts"
 data:
   raw: "data/raw"
   interim: "data/interim"
