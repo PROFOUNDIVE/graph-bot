@@ -68,13 +68,20 @@ def test_generate_amortization_curve_metrics(tmp_path: Path):
     assert "attempt_success_rate_avg" in header
     assert "tokens_total_avg" in header
     assert "cost_per_solved" in header
+    # Latency statistics are now exposed in the CSV
+    assert "latency_ms_p50" in header
+    assert "latency_ms_p95" in header
 
     last_row = content[-1].split(",")
 
     asr_avg_idx = header.index("attempt_success_rate_avg")
     tokens_avg_idx = header.index("tokens_total_avg")
+    latency_p50_idx = header.index("latency_ms_p50")
+    latency_p95_idx = header.index("latency_ms_p95")
     cost_solved_idx = header.index("cost_per_solved")
 
     assert float(last_row[tokens_avg_idx]) == 340.0
     assert abs(float(last_row[asr_avg_idx]) - 0.6666666666666666) < 1e-6
+    assert float(last_row[latency_p50_idx]) == 10.0
+    assert abs(float(last_row[latency_p95_idx]) - 91.0) < 1e-6
     assert float(last_row[cost_solved_idx]) == 0.5

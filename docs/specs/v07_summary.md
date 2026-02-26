@@ -179,3 +179,8 @@ docs(specs): add v0.7.0 architecture summary
 ✅ **In-process**: No conda environment switching  
 ✅ **No secrets**: Clean scan of submodules  
 ✅ **No regression**: Existing modes unchanged
+
+## v0.7.1 Patch Notes
+
+- Bot prompt parity fix (Game24 bot mode now uses Meta-Reasoner structure)
+- Latency p50/p95 test assertions added

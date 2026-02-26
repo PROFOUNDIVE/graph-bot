@@ -73,3 +73,9 @@ def test_stream_and_amortize_cli(tmp_path, mock_settings, monkeypatch):
     result = runner.invoke(app, ["amortize", str(stream_path), "--out", str(out_csv)])
     assert result.exit_code == 0
     assert out_csv.exists()
+    # Verify CSV header contains latency columns
+    csv_content = out_csv.read_text(encoding="utf-8")
+    header_line = csv_content.splitlines()[0]
+    assert "latency_ms_p50" in header_line
+    assert "latency_ms_p95" in header_line
+

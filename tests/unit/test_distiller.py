@@ -296,6 +296,7 @@ def test_insert_solution_template_uses_real_task_and_single_template_node():
         metrics=cast(Any, metrics),
         t=1,
         problem_id="p1",
+        mode="graph_bot",
         answer_text="apple pear",
         solved=True,
         query=query,
