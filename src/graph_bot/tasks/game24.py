@@ -115,6 +115,39 @@ Input: {input}
         if mode == "cot":
             return got_cot_system, got_cot_user_template.format(input=numbers_str)
 
+        if mode == "bot":
+            metadata = query.metadata or {}
+            distilled_info = str(metadata.get("distilled_question") or query.question)
+            original_input = str(metadata.get("original_question") or query.question)
+
+            bot_system = """You are playing the 24 Game.
+
+Given four numbers, use each number exactly once (in any order) and only the operations +, -, *, /.
+Parentheses are allowed.
+
+You MUST output exactly one line in the following format:
+<python_expression> = 24
+
+No additional text. No tags. No 'Output:' prefix."""
+
+            bot_user_template = """Distilled information:
+{distilled_info}
+
+Original input:
+{original_input}
+
+Thought template:
+{thought_template}
+"""
+            return (
+                bot_system,
+                bot_user_template.format(
+                    distilled_info=distilled_info,
+                    original_input=original_input,
+                    thought_template=retrieval.concatenated_context,
+                ),
+            )
+
         base_user = got_cot_user_template.format(input=numbers_str)
         return (
             f"{META_REASONER_SYSTEM}\n\n{got_cot_system}",
