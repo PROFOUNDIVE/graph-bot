@@ -41,6 +41,11 @@ MODE_CAPABILITIES: dict[str, dict[str, bool]] = {
     "tot": {"uses_retrieval": False, "updates_memory": False},
 }
 
+MODE_ALIASES: dict[str, tuple[str, bool | None]] = {
+    "graph_bot_no": ("graph_bot", False),
+    "graph_bot_no_edges": ("graph_bot", False),
+}
+
 
 class Game24Problem(BaseModel):
     """Game of 24 problem format."""
@@ -65,6 +70,17 @@ class TimeoutException(Exception):
 
 def timeout_handler(signum, frame):
     raise TimeoutException("Problem processing timed out")
+
+
+def _resolve_mode_alias(mode: str, use_edges: bool | None) -> tuple[str, bool | None]:
+    alias = MODE_ALIASES.get(mode)
+    if alias is None:
+        return mode, use_edges
+
+    resolved_mode, forced_use_edges = alias
+    if forced_use_edges is None:
+        return resolved_mode, use_edges
+    return resolved_mode, forced_use_edges
 
 
 def load_game24_problems(file_path: Path) -> List[Game24Problem]:
@@ -106,14 +122,17 @@ def run_continual_stream(
 
     start_run = time.perf_counter()
 
+    requested_mode = mode or settings.mode
+    resolved_mode, resolved_use_edges = _resolve_mode_alias(requested_mode, use_edges)
+
     task_spec = registry.get_task(task)
     problems = list(task_spec.load_problems(problems_file))
     if max_problems:
         problems = problems[:max_problems]
 
     adapter = GraphRAGAdapter(
-        mode=mode,
-        use_edges=use_edges,
+        mode=resolved_mode,
+        use_edges=resolved_use_edges,
         policy_id=policy_id,
         retrieval_backend=retrieval_backend,
         cross_task_retrieval=cross_task_retrieval,
@@ -129,7 +148,7 @@ def run_continual_stream(
     manifest.log_start(
         run_id,
         config={
-            "mode": mode,
+            "mode": resolved_mode,
             "model": settings.llm_model,
             "task": task_spec.name,
             "cross_task_retrieval": cross_task_retrieval,
@@ -158,7 +177,7 @@ def run_continual_stream(
                 start_problem = time.perf_counter()
                 poisoned_update_rate: float | None = None
 
-                active_mode = mode or settings.mode
+                active_mode = resolved_mode
                 active_policy_id = policy_id or settings.policy_id
                 active_retrieval_backend = (
                     retrieval_backend or settings.retrieval_backend
@@ -860,7 +879,7 @@ def _insert_solution_template(
             edges.append(
                 ReasoningEdge(
                     src=source_id,
-                    dst=f"episode-{problem_id}-solution",
+                    dst=distilled_nodes[0].node_id,
                     relation="used_for",
                     attributes={
                         "weight": 1.0,

@@ -480,6 +480,10 @@ class GraphRAGAdapter:
             for edge in tree.edges:
                 src = node_id_map.get(edge.src)
                 dst = node_id_map.get(edge.dst)
+                if src is None and edge.src in node_index:
+                    src = edge.src
+                if dst is None and edge.dst in node_index:
+                    dst = edge.dst
                 if not src or not dst:
                     continue
                 key = (src, dst)

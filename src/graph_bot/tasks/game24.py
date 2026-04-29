@@ -10,6 +10,10 @@ from ..eval.validators import Game24Validator
 from ..pipelines.stream_loop import _normalize_candidate_line, load_game24_problems
 
 
+_PYTHON_CODE_BLOCK_PATTERN = re.compile(r"```(?:python)?\s*.*?```", re.DOTALL)
+_ANSWER_BLOCK_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+
+
 META_REASONER_SYSTEM = """[Meta Reasoner]
 You are a Meta Reasoner who are extremely knowledgeable in all kinds of fields including
 Computer Science, Math, Physics, Literature, History, Chemistry, Logical reasoning, Culture,
@@ -109,13 +113,25 @@ Input: {input}
             int(float(x)) for x in re.findall(r"(-?\d+\.?\d*)", query.question)[:4]
         ]
         numbers_str = " ".join(str(x) for x in numbers)
+        base_user = got_cot_user_template.format(input=numbers_str)
 
         if mode == "io":
             return got_io_system, got_io_user_template.format(input=numbers_str)
         if mode == "cot":
             return got_cot_system, got_cot_user_template.format(input=numbers_str)
+        if mode == "graph_bot_exec":
+            exec_system = (
+                f"{META_REASONER_SYSTEM}\n\n{got_cot_system}\n"
+                "For graph_bot_exec, output exactly two parts in order:\n"
+                "1) A fenced python code block (```python ... ```) that prints exactly one line containing only the final Python expression candidate.\n"
+                "2) A final <answer>...</answer> block containing the same final expression candidate.\n"
+                "Constraints: no imports; no file or network access; print only the final expression."
+            )
+            return (
+                exec_system,
+                f"{base_user}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n",
+            )
 
-        base_user = got_cot_user_template.format(input=numbers_str)
         return (
             f"{META_REASONER_SYSTEM}\n\n{got_cot_system}",
             f"{base_user}\nRetrieved templates/context:\n{retrieval.concatenated_context}\n",
@@ -125,7 +141,20 @@ Input: {input}
         numbers = [
             int(float(x)) for x in re.findall(r"(-?\d+\.?\d*)", query.question)[:4]
         ]
-        candidate, _ = _normalize_candidate_line(raw_output, allowed_numbers=numbers)
+
+        answer_matches = list(_ANSWER_BLOCK_PATTERN.finditer(raw_output))
+        if answer_matches:
+            answer_text = answer_matches[-1].group(1).strip()
+            answer_candidate, _ = _normalize_candidate_line(
+                answer_text, allowed_numbers=numbers
+            )
+            if answer_candidate:
+                return answer_candidate
+
+        text_without_code = _PYTHON_CODE_BLOCK_PATTERN.sub("\n", raw_output)
+        candidate, _ = _normalize_candidate_line(
+            text_without_code, allowed_numbers=numbers
+        )
         return candidate
 
     def oracle_validate(
