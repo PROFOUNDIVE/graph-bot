@@ -67,7 +67,9 @@ class StreamMetricsLogger:
         self._cumulative_cost_usd += float(event.api_cost_usd)
 
         if event.contamination_rate is not None:
-            retrieved = max(event.reuse_count, 0)
+            retrieved = max(event.retrieval_path_node_cardinality, 0)
+            if retrieved == 0 and event.reuse_count > 0:
+                retrieved = max(event.reuse_count, 0)
             self._cumulative_retrieved_templates += retrieved
             contaminated = int(round(float(event.contamination_rate) * retrieved))
             self._cumulative_contaminated += contaminated

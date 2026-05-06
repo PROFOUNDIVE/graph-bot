@@ -42,6 +42,8 @@ class StreamProblemMetrics(BaseModel):
     api_cost_usd: float = 0.0
     retrieval_hit: bool = False
     reuse_count: int = 0
+    retrieval_path_node_cardinality: int = 0
+    retrieval_used_stored_edges: bool = False
     memory_n_nodes: int = 0
     memory_n_edges: int = 0
     contamination_rate: float | None = None

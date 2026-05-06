@@ -275,6 +275,12 @@ def run_continual_stream(
                             error_type=ret_error_type,
                         )
                     )
+                    retrieval_path_node_cardinality = _retrieval_path_node_cardinality(
+                        retrieval
+                    )
+                    retrieval_used_stored_edges = _retrieval_used_stored_edges(
+                        retrieval
+                    )
                     # Use a safe attribute access to tolerate adapter stubs that may not
                     # implement `last_embedding_meta`. If absent or falsy, default to an empty dict.
                     embedding_meta = getattr(adapter, "last_embedding_meta", None) or {}
@@ -316,6 +322,12 @@ def run_continual_stream(
                                 ),
                                 "task": query_metadata.get("task", task_spec.name),
                                 "distilled_question": distilled_query.question,
+                                "retrieval_path_node_cardinality": (
+                                    retrieval_path_node_cardinality
+                                ),
+                                "retrieval_used_stored_edges": (
+                                    retrieval_used_stored_edges
+                                ),
                                 "packed_context_tokens": (
                                     len(
                                         re.findall(
@@ -383,7 +395,7 @@ def run_continual_stream(
                     if uses_retrieval:
                         adapter.register_usage(retrieval.paths)
 
-                    reuse_count = sum(len(p.node_ids) for p in retrieval.paths)
+                    reuse_count = retrieval_path_node_cardinality
                     contaminated = _count_contaminated_templates(
                         adapter.export_graph(), retrieval.paths
                     )
@@ -503,6 +515,8 @@ def run_continual_stream(
                         api_cost_usd=api_cost_usd,
                         retrieval_hit=len(retrieval.paths) > 0,
                         reuse_count=reuse_count,
+                        retrieval_path_node_cardinality=retrieval_path_node_cardinality,
+                        retrieval_used_stored_edges=retrieval_used_stored_edges,
                         memory_n_nodes=len(memory.nodes),
                         memory_n_edges=len(memory.edges),
                         contamination_rate=contamination_rate,
@@ -574,6 +588,8 @@ def run_continual_stream(
                         api_cost_usd=0.0,
                         retrieval_hit=False,
                         reuse_count=0,
+                        retrieval_path_node_cardinality=0,
+                        retrieval_used_stored_edges=False,
                         memory_n_nodes=0,
                         memory_n_edges=0,
                         contamination_rate=None,
@@ -630,6 +646,8 @@ def run_continual_stream(
                         api_cost_usd=0.0,
                         retrieval_hit=False,
                         reuse_count=0,
+                        retrieval_path_node_cardinality=0,
+                        retrieval_used_stored_edges=False,
                         memory_n_nodes=0,
                         memory_n_edges=0,
                         contamination_rate=None,
@@ -757,6 +775,14 @@ def _count_contaminated_templates(graph, paths: list) -> int:
     return contaminated
 
 
+def _retrieval_path_node_cardinality(retrieval: RetrievalResult) -> int:
+    return sum(len(path.node_ids) for path in retrieval.paths)
+
+
+def _retrieval_used_stored_edges(retrieval: RetrievalResult) -> bool:
+    return any(len(path.node_ids) > 1 for path in retrieval.paths)
+
+
 def _insert_solution_template(
     *,
     adapter: GraphRAGAdapter,
@@ -870,7 +896,7 @@ def _insert_solution_template(
 
     # 2. Identify source edges if retrieval was used
     edges: list[ReasoningEdge] = []
-    if mode != "bot" and retrieval and retrieval.paths:
+    if adapter.use_edges and mode != "bot" and retrieval and retrieval.paths:
         for path in retrieval.paths:
             if not path.node_ids:
                 continue
