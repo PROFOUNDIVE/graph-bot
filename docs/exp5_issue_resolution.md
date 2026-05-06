@@ -4,6 +4,11 @@
 
 This document validates the three EXP5 findings from `outputs/exp5_report_v0.7.1.md`, identifies gaps in the original analysis, and records production fixes applied in code.
 
+Claim-level note for Week19-safe reporting: the old graph-structure failure should
+be interpreted as source-mixed / mismeasured evidence, not as a proven graph
+effect. The graph effect remains unconfirmed until corrected retrieval-phase
+telemetry is exercised.
+
 ## Validation Verdicts
 
 | Issue | Verdict | Gap in original analysis |
@@ -49,6 +54,17 @@ This enables edges from retrieved historical nodes to newly inserted distilled n
 File: `tests/unit/test_graphrag_edge_resolution.py`
 
 - Added test proving a tree edge from an existing MetaGraph node (`src`) to a new node (`dst`) is persisted with relation `used_for`.
+
+### Reporting Interpretation Constraint
+
+- This code fix does not retroactively prove that the old Week19 graph-structure
+  claim should have passed.
+- The historical block is better understood as a source-mixed / mismeasured
+  graph-structure check: downstream persisted-edge growth was available, but the
+  telemetry did not cleanly separate retrieval-phase traversal evidence from
+  post-solve edge accumulation.
+- Until corrected retrieval-phase telemetry is exercised in a rerun or equivalent
+  validation path, graph effect remains unconfirmed.
 
 ---
 
@@ -140,8 +156,12 @@ Observed results:
 
 ---
 
-## Recommended Follow-up (EXP5 rerun)
+## Recommended Follow-up (Telemetry / Claim-Gate Separation)
 
-1. Rerun EXP5 arms with corrected external arm parsing (explicit `--mode graph_bot` and explicit `--use-edges` only for edge-enabled arm).
-2. Inspect `token_events` for `operation="exec"` and `code_block_present=true` rate in `graph_bot_exec` runs.
-3. Compare post-fix graph metrics (edge count and multi-hop retrieval path length) between no-edge and edge-enabled arms to validate graph contribution claims.
+1. Keep retrieval-phase traversal evidence and post-solve persisted edge growth
+   on separate telemetry and reporting axes.
+2. Keep execution readiness and performance outcomes on separate claim axes.
+3. Do not upgrade graph or performance claims from this document alone; graph
+   contribution and performance benefit remain unconfirmed until the corrected
+   telemetry package is exercised and interpreted through the bounded
+   telemetry/claim-gate follow-up.

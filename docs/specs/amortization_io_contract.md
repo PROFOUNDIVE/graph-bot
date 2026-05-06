@@ -16,6 +16,41 @@ References:
 - `docs/policies/latency_reporting_policy.md`
 - `docs/specs/token_tracker_schema_v0.json`
 
+## Canonical Telemetry Semantics Contract
+
+This contract freezes one machine-readable split for edge-related telemetry:
+
+1. **retrieval-phase traversal evidence**: what retrieval consumed before solve.
+2. **post-solve persisted edge growth**: what memory update stored or increased
+   after solve.
+
+All downstream docs, diagnostics, and claim gates MUST preserve this split.
+`memory_n_edges` and `edges_added_count` MUST be treated as persisted-edge
+growth signals only and MUST NOT be used by themselves as graph-structure-use
+proof.
+
+Canonical slots and mapping rules:
+
+| Canonical slot | Phase | Meaning | Current/allowed mapping |
+| --- | --- | --- | --- |
+| `retrieval_path_node_cardinality` | retrieval | Node cardinality of retrieved path material consumed by solve | Use explicit `retrieval_path_node_cardinality` if present. Otherwise map legacy `reuse_count` to this slot strictly as retrieved-node cardinality. |
+| `retrieval_used_stored_edges` | retrieval | Whether retrieval traversed persisted graph edges before solve | Use explicit `retrieval_used_stored_edges` if present. Otherwise leave this slot unproven unless retrieval-path artifacts directly demonstrate stored-edge traversal. |
+| `persisted_edge_snapshot` | post-solve persistence | Persisted edge count after update/snapshot | Map `memory_n_edges` to this slot. |
+| `persisted_edges_added_delta` | post-solve persistence | Persisted edges added during update | Map `edges_added_count` to this slot. |
+
+Normative interpretation rules:
+
+- Retrieval-phase graph-structure claims MUST be gated by retrieval-phase slots
+  only.
+- `reuse_count` can establish that retrieval reused nodes; it cannot by itself
+  establish that persisted edges were traversed.
+- `packed_context_tokens` can establish context size; it cannot by itself
+  establish graph-edge traversal.
+- `memory_n_edges` and `edges_added_count` describe persisted state/growth after
+  solve and are insufficient as graph-structure-use proof on their own.
+- Reporting packages MUST keep retrieval-phase traversal evidence, execution
+  readiness, and performance outcomes on separate claim axes.
+
 ## 1) Inputs Produced By `graph-bot stream`
 
 All files are JSONL (one JSON object per line).
@@ -65,9 +100,10 @@ Keys:
 - `latency_total_ms` (float)
 - `api_cost_usd` (float)
 - `retrieval_hit` (bool)
-- `reuse_count` (int)
+- `reuse_count` (int; legacy mapping for
+  `retrieval_path_node_cardinality`, not a stored-edge traversal proof)
 - `memory_n_nodes` (int)
-- `memory_n_edges` (int)
+- `memory_n_edges` (int; mapping for `persisted_edge_snapshot` only)
 - `contamination_rate` (float | null)
 
 ### 1.3 `*.stream.jsonl` (cumulative stream metrics)
@@ -105,8 +141,15 @@ Optional keys:
 - `parent_id`, `span_id`, `component`, `latency_ms`, `metadata`
 - `metadata` recommended keys in v0.3:
     - `stream_run_id`, `problem_id`, `t`, `operation`, `status`
-    - `packed_context_tokens` (for `rag_retrieval` events): total tokens of context packed into the prompt.
+    - `packed_context_tokens` (for `rag_retrieval` events): total tokens of
+      context packed into the prompt. Supportive retrieval-size signal only; not
+      stored-edge traversal proof by itself.
     - `edges_added_count` (for `insertion` events): number of new edges created.
+      Map only to `persisted_edges_added_delta`.
+
+Preferred future retrieval metadata fields for direct claim-gating:
+- `retrieval_path_node_cardinality`
+- `retrieval_used_stored_edges`
 
 Minimal example:
 ```json

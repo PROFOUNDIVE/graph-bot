@@ -221,4 +221,17 @@ resolved_mode, resolved_use_edges = _resolve_mode_alias(requested_mode, use_edge
 
 ## Bottom Line
 
-Against the current source files, Issue #1 and Issue #3 are not confirmed, and Issue #2 is only partially true (exec strictness remains, but prompt incompatibility has been addressed).
+Against the current source files, Issue #1 and Issue #3 are not confirmed, and
+Issue #2 is only partially true (exec strictness remains, but prompt
+incompatibility has been addressed).
+
+For Week19-safe interpretation, this should not be turned into a stronger graph
+claim. The old graph-structure block is best treated as source-mixed /
+mismeasured evidence: persisted-edge growth and other downstream surfaces were
+observable, but retrieval-phase traversal evidence was not cleanly separated.
+That means the historical failure explanation becomes more precise, while graph
+effect remains unconfirmed until corrected telemetry is exercised.
+
+Execution readiness and performance outcomes also stay on separate claim axes.
+Operational fixes or successful rerun execution would not, by themselves,
+establish graph contribution or performance benefit.
