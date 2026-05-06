@@ -73,6 +73,21 @@ class RunMetrics:
     cost_avg_usd: float
 
 
+@dataclass(frozen=True)
+class GraphRunDiagnostics:
+    run_id: str
+    arm_id: str
+    graph_arm: str
+    traversal_telemetry_state: str
+    traversal_used_stored_edges_any: Optional[bool]
+    max_retrieval_path_node_cardinality: Optional[int]
+    rag_retrieval_event_count: int
+    final_memory_n_nodes: int
+    final_memory_n_edges: int
+    max_edges_added_count: int
+    persisted_edge_growth_observed: bool
+
+
 def _safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -83,6 +98,13 @@ def _safe_float(value: Any) -> Optional[float]:
     if np.isnan(val) or np.isinf(val):
         return None
     return val
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    val = _safe_float(value)
+    if val is None:
+        return None
+    return int(val)
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -132,6 +154,23 @@ def _load_last_per_t(path: Path) -> List[Dict[str, Any]]:
                 continue
             latest[int(t_val)] = obj
     return [latest[key] for key in sorted(latest.keys())]
+
+
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
 
 
 def _infer_arm_label(arm_id: str, mode: str) -> str:
@@ -225,7 +264,22 @@ def _load_run_metadata(
                     and retrieval_backend == "unknown"
                 ):
                     retrieval_backend = backend_candidate
-                if mode != "unknown" and retrieval_backend != "unknown":
+                validator_candidate = metadata.get("validator_mode")
+                if isinstance(validator_candidate, str) and validator_mode == "unknown":
+                    validator_mode = validator_candidate
+                operation = obj.get("operation")
+                model_candidate = obj.get("model")
+                if (
+                    operation == "validate"
+                    and isinstance(model_candidate, str)
+                    and validator_mode == "unknown"
+                ):
+                    validator_mode = _infer_validator_mode(model_candidate)
+                if (
+                    mode != "unknown"
+                    and retrieval_backend != "unknown"
+                    and validator_mode != "unknown"
+                ):
                     break
 
     expression_format = _infer_expression_format(mode, arm_id)
@@ -423,10 +477,236 @@ def _paired_delta_rows(
     return rows
 
 
+def _infer_graph_arm(arm_id: str) -> Optional[str]:
+    arm_l = arm_id.lower()
+    if "no_edges" in arm_l:
+        return "no_edge"
+    if "flat" in arm_l or "exec" in arm_l:
+        return None
+    if "graph" in arm_l:
+        return "edge_enabled"
+    return None
+
+
+def _collect_graph_run_diagnostics(
+    log_dir: Path,
+    runs: Sequence[RunMetrics],
+) -> List[GraphRunDiagnostics]:
+    rows: List[GraphRunDiagnostics] = []
+    for run in sorted(runs, key=lambda x: x.run_id):
+        graph_arm = _infer_graph_arm(run.arm_id)
+        if graph_arm is None:
+            continue
+
+        problems_path = log_dir / f"{run.run_id}.problems.jsonl"
+        token_events_path = log_dir / f"{run.run_id}.token_events.jsonl"
+        problem_rows = _load_last_per_t(problems_path) if problems_path.exists() else []
+        token_events = _load_jsonl(token_events_path)
+
+        explicit_edge_usage: List[bool] = []
+        path_cardinalities: List[int] = []
+        rag_retrieval_event_count = 0
+        max_edges_added_count = 0
+
+        for row in problem_rows:
+            explicit = row.get("retrieval_used_stored_edges")
+            if isinstance(explicit, bool):
+                explicit_edge_usage.append(explicit)
+            cardinality = _safe_int(row.get("retrieval_path_node_cardinality"))
+            if cardinality is not None:
+                path_cardinalities.append(cardinality)
+
+        for event in token_events:
+            if event.get("event_type") == "rag_retrieval":
+                rag_retrieval_event_count += 1
+                metadata = event.get("metadata")
+                if isinstance(metadata, dict):
+                    explicit = metadata.get("retrieval_used_stored_edges")
+                    if isinstance(explicit, bool):
+                        explicit_edge_usage.append(explicit)
+                    cardinality = _safe_int(
+                        metadata.get("retrieval_path_node_cardinality")
+                    )
+                    if cardinality is not None:
+                        path_cardinalities.append(cardinality)
+            elif event.get("event_type") == "memory_update":
+                metadata = event.get("metadata")
+                if isinstance(metadata, dict):
+                    max_edges_added_count = max(
+                        max_edges_added_count,
+                        _safe_int(metadata.get("edges_added_count")) or 0,
+                    )
+
+        if explicit_edge_usage:
+            traversal_telemetry_state = "explicit"
+            traversal_used_stored_edges_any: Optional[bool] = any(explicit_edge_usage)
+        elif rag_retrieval_event_count > 0 or any(
+            "reuse_count" in row or "retrieval_hit" in row for row in problem_rows
+        ):
+            traversal_telemetry_state = "legacy_only"
+            traversal_used_stored_edges_any = None
+        else:
+            traversal_telemetry_state = "missing"
+            traversal_used_stored_edges_any = None
+
+        final_problem = problem_rows[-1] if problem_rows else {}
+        final_memory_n_nodes = _safe_int(final_problem.get("memory_n_nodes")) or 0
+        final_memory_n_edges = _safe_int(final_problem.get("memory_n_edges")) or 0
+        max_retrieval_path_node_cardinality = (
+            max(path_cardinalities) if path_cardinalities else None
+        )
+        persisted_edge_growth_observed = (
+            final_memory_n_edges > 0 or max_edges_added_count > 0
+        )
+
+        rows.append(
+            GraphRunDiagnostics(
+                run_id=run.run_id,
+                arm_id=run.arm_id,
+                graph_arm=graph_arm,
+                traversal_telemetry_state=traversal_telemetry_state,
+                traversal_used_stored_edges_any=traversal_used_stored_edges_any,
+                max_retrieval_path_node_cardinality=max_retrieval_path_node_cardinality,
+                rag_retrieval_event_count=rag_retrieval_event_count,
+                final_memory_n_nodes=final_memory_n_nodes,
+                final_memory_n_edges=final_memory_n_edges,
+                max_edges_added_count=max_edges_added_count,
+                persisted_edge_growth_observed=persisted_edge_growth_observed,
+            )
+        )
+
+    return rows
+
+
+def _build_graph_diagnostics(
+    log_dir: Path,
+    runs: Sequence[RunMetrics],
+) -> Dict[str, Any]:
+    run_rows = _collect_graph_run_diagnostics(log_dir=log_dir, runs=runs)
+    edge_rows = [row for row in run_rows if row.graph_arm == "edge_enabled"]
+    no_edge_rows = [row for row in run_rows if row.graph_arm == "no_edge"]
+    return {
+        "runs": run_rows,
+        "aggregate": {
+            "edge_enabled_runs": len(edge_rows),
+            "no_edge_runs": len(no_edge_rows),
+            "edge_enabled_persisted_edge_growth_any": any(
+                row.persisted_edge_growth_observed for row in edge_rows
+            ),
+            "no_edge_persisted_edge_growth_any": any(
+                row.persisted_edge_growth_observed for row in no_edge_rows
+            ),
+        },
+    }
+
+
+def _paired_row_lookup(
+    paired_rows: Sequence[Mapping[str, Any]],
+    *,
+    comparison: str,
+    metric: str,
+) -> Optional[Mapping[str, Any]]:
+    for row in paired_rows:
+        if row.get("comparison") == comparison and row.get("metric") == metric:
+            return row
+    return None
+
+
+def _build_claim_gates(
+    graph_diagnostics: Mapping[str, Any],
+    paired_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    graph_runs = list(graph_diagnostics.get("runs", []))
+    edge_rows = [row for row in graph_runs if row.graph_arm == "edge_enabled"]
+    no_edge_rows = [row for row in graph_runs if row.graph_arm == "no_edge"]
+
+    if (
+        not edge_rows
+        or not no_edge_rows
+        or any(row.traversal_telemetry_state != "explicit" for row in graph_runs)
+    ):
+        graph_gate_status = "FAIL"
+        graph_gate_source = "telemetry_ambiguous"
+    else:
+        edge_any = any(row.traversal_used_stored_edges_any is True for row in edge_rows)
+        no_edge_any = any(
+            row.traversal_used_stored_edges_any is True for row in no_edge_rows
+        )
+        if edge_any and not no_edge_any:
+            graph_gate_status = "PASS"
+            graph_gate_source = "traversal_confirmed"
+        elif not edge_any:
+            graph_gate_status = "FAIL"
+            graph_gate_source = "no_traversal_evidence"
+        else:
+            graph_gate_status = "FAIL"
+            graph_gate_source = "shared_traversal_evidence"
+
+    graph_perf_row = _paired_row_lookup(
+        paired_rows, comparison="graph_vs_flat", metric="accuracy"
+    )
+    graph_ci_low = None
+    if graph_perf_row is not None:
+        graph_ci_low = _safe_float(graph_perf_row.get("ci_low"))
+    graph_perf_status = (
+        "PASS" if graph_ci_low is not None and graph_ci_low > 0 else "FAIL"
+    )
+
+    return {
+        "graph_structure_used": {
+            "status": graph_gate_status,
+            "source": graph_gate_source,
+        },
+        "graph_performance": {
+            "status": graph_perf_status,
+            "ci_low": graph_ci_low,
+        },
+    }
+
+
 def _fmt_ci(low: Optional[float], high: Optional[float], precision: int = 4) -> str:
     if low is None or high is None:
         return "n<2"
     return f"[{low:.{precision}f}, {high:.{precision}f}]"
+
+
+def _week19_claim_wording_lines(
+    claim_gates: Mapping[str, Mapping[str, Any]],
+) -> List[str]:
+    graph_gate = claim_gates.get("graph_structure_used", {})
+    graph_gate_source = graph_gate.get("source", "telemetry_ambiguous")
+
+    lines = [
+        "## Week19 Safe Claim Wording",
+        "",
+        (
+            "Historical shared edge-count failures are treated as source-mixed / "
+            "mismeasured, not as proof of no-edge traversal leakage."
+        ),
+        "Graph structure effect remains unconfirmed.",
+    ]
+
+    if graph_gate_source == "no_traversal_evidence":
+        lines.append(
+            "The current report package still lacks positive stored-edge traversal evidence in the edge-enabled arm."
+        )
+    elif graph_gate_source == "shared_traversal_evidence":
+        lines.append(
+            "The current report package still shows stored-edge traversal evidence on both arms, so graph-structure attribution stays blocked."
+        )
+    elif graph_gate_source == "traversal_confirmed":
+        lines.append(
+            "Traversal attribution is separated from persisted growth, but performance outcomes remain a separate claim axis."
+        )
+    else:
+        lines.append(
+            "The current report package still has ambiguous traversal telemetry, so graph-structure attribution stays blocked."
+        )
+
+    lines.append(
+        "Execution-readiness must be interpreted separately from graph-structure and performance outcomes."
+    )
+    return lines
 
 
 def _write_markdown(
@@ -434,10 +714,12 @@ def _write_markdown(
     runs: Sequence[RunMetrics],
     arm_rows: Sequence[Mapping[str, Any]],
     paired_rows: Sequence[Mapping[str, Any]],
+    graph_diagnostics: Mapping[str, Any],
+    claim_gates: Mapping[str, Mapping[str, Any]],
     warnings: Sequence[str],
 ) -> None:
     lines: List[str] = []
-    lines.append("# EXP5 Repeats Analysis (v0.7.1)")
+    lines.append("# EXP5 Repeats Analysis (v0.7.2)")
     lines.append("")
 
     if not runs:
@@ -496,6 +778,63 @@ def _write_markdown(
             f"{float(row['delta_mean']):.6f} | {_fmt_ci(row['ci_low'], row['ci_high'])} |"
         )
 
+    graph_run_rows = list(graph_diagnostics.get("runs", []))
+    if graph_run_rows:
+        lines.append("")
+        lines.append("## Graph Diagnostics")
+        lines.append("")
+        lines.append(
+            "Persisted edge growth is reported separately from traversal evidence."
+        )
+        lines.append("")
+        lines.append(
+            "| run_id | arm | traversal telemetry | stored-edge traversal | max path nodes | final memory edges | max edges added | persisted edge growth |"
+        )
+        lines.append("| :--- | :--- | :--- | :--- | ---: | ---: | ---: | :--- |")
+        for row in graph_run_rows:
+            stored_edge_value = (
+                "unknown"
+                if row.traversal_used_stored_edges_any is None
+                else str(row.traversal_used_stored_edges_any)
+            )
+            path_nodes = (
+                "unknown"
+                if row.max_retrieval_path_node_cardinality is None
+                else str(row.max_retrieval_path_node_cardinality)
+            )
+            lines.append(
+                f"| {row.run_id} | {row.graph_arm} | {row.traversal_telemetry_state} | "
+                f"{stored_edge_value} | {path_nodes} | {row.final_memory_n_edges} | "
+                f"{row.max_edges_added_count} | {row.persisted_edge_growth_observed} |"
+            )
+
+        aggregate = graph_diagnostics.get("aggregate", {})
+        lines.append("")
+        lines.append(
+            f"- edge_enabled_persisted_edge_growth_any={aggregate.get('edge_enabled_persisted_edge_growth_any', False)}"
+        )
+        lines.append(
+            f"- no_edge_persisted_edge_growth_any={aggregate.get('no_edge_persisted_edge_growth_any', False)}"
+        )
+
+    if claim_gates:
+        lines.append("")
+        lines.append("## Claim Gates")
+        lines.append("")
+        graph_gate = claim_gates.get("graph_structure_used", {})
+        lines.append(
+            "Graph-structure-used gate="
+            f"{graph_gate.get('status', 'FAIL')} source={graph_gate.get('source', 'telemetry_ambiguous')}"
+        )
+        graph_perf = claim_gates.get("graph_performance", {})
+        lines.append(
+            "Graph-performance gate="
+            f"{graph_perf.get('status', 'FAIL')} graph_vs_flat_accuracy_ci_low="
+            f"{graph_perf.get('ci_low')}"
+        )
+        lines.append("")
+        lines.extend(_week19_claim_wording_lines(claim_gates))
+
     if warnings:
         lines.append("")
         lines.append("## Warnings")
@@ -513,6 +852,8 @@ def _write_csv(
     runs: Sequence[RunMetrics],
     arm_rows: Sequence[Mapping[str, Any]],
     paired_rows: Sequence[Mapping[str, Any]],
+    graph_diagnostics: Mapping[str, Any],
+    claim_gates: Mapping[str, Mapping[str, Any]],
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -541,6 +882,9 @@ def _write_csv(
         "cost_avg_usd",
         "problems",
         "solved",
+        "diagnostic_key",
+        "diagnostic_status",
+        "value_text",
     ]
 
     with out_path.open("w", encoding="utf-8", newline="") as handle:
@@ -575,6 +919,9 @@ def _write_csv(
                     "cost_avg_usd": run.cost_avg_usd,
                     "problems": run.problems,
                     "solved": run.solved,
+                    "diagnostic_key": "",
+                    "diagnostic_status": "",
+                    "value_text": "",
                 }
             )
 
@@ -606,6 +953,9 @@ def _write_csv(
                     "cost_avg_usd": "",
                     "problems": "",
                     "solved": "",
+                    "diagnostic_key": "",
+                    "diagnostic_status": "",
+                    "value_text": "",
                 }
             )
 
@@ -637,8 +987,154 @@ def _write_csv(
                     "cost_avg_usd": "",
                     "problems": "",
                     "solved": "",
+                    "diagnostic_key": "",
+                    "diagnostic_status": "",
+                    "value_text": "",
                 }
             )
+
+        for row in graph_diagnostics.get("runs", []):
+            writer.writerow(
+                {
+                    "row_type": "graph_diagnostic_run",
+                    "comparison": "",
+                    "arm_id": row.arm_id,
+                    "arm_label": row.graph_arm,
+                    "run_id": row.run_id,
+                    "rep": "",
+                    "mode": "",
+                    "validator_mode": "",
+                    "expression_format": "",
+                    "retrieval_backend": "",
+                    "metric": "",
+                    "n": row.rag_retrieval_event_count,
+                    "value": row.max_retrieval_path_node_cardinality,
+                    "ci_low": "",
+                    "ci_high": "",
+                    "accuracy": "",
+                    "attempt_success_rate": "",
+                    "tokens_p50": "",
+                    "tokens_avg": "",
+                    "latency_p50_ms": "",
+                    "latency_p95_ms": "",
+                    "latency_avg_ms": "",
+                    "cost_avg_usd": "",
+                    "problems": row.final_memory_n_edges,
+                    "solved": row.max_edges_added_count,
+                    "diagnostic_key": "traversal_telemetry_state",
+                    "diagnostic_status": row.traversal_telemetry_state,
+                    "value_text": (
+                        "unknown"
+                        if row.traversal_used_stored_edges_any is None
+                        else str(row.traversal_used_stored_edges_any)
+                    ),
+                }
+            )
+
+        for key, value in graph_diagnostics.get("aggregate", {}).items():
+            writer.writerow(
+                {
+                    "row_type": "graph_diagnostic_aggregate",
+                    "comparison": "",
+                    "arm_id": "",
+                    "arm_label": "",
+                    "run_id": "",
+                    "rep": "",
+                    "mode": "",
+                    "validator_mode": "",
+                    "expression_format": "",
+                    "retrieval_backend": "",
+                    "metric": "",
+                    "n": "",
+                    "value": "",
+                    "ci_low": "",
+                    "ci_high": "",
+                    "accuracy": "",
+                    "attempt_success_rate": "",
+                    "tokens_p50": "",
+                    "tokens_avg": "",
+                    "latency_p50_ms": "",
+                    "latency_p95_ms": "",
+                    "latency_avg_ms": "",
+                    "cost_avg_usd": "",
+                    "problems": "",
+                    "solved": "",
+                    "diagnostic_key": key,
+                    "diagnostic_status": "",
+                    "value_text": str(value),
+                }
+            )
+
+        for key, value in claim_gates.items():
+            writer.writerow(
+                {
+                    "row_type": "claim_gate",
+                    "comparison": "",
+                    "arm_id": "",
+                    "arm_label": "",
+                    "run_id": "",
+                    "rep": "",
+                    "mode": "",
+                    "validator_mode": "",
+                    "expression_format": "",
+                    "retrieval_backend": "",
+                    "metric": "",
+                    "n": "",
+                    "value": value.get("ci_low", ""),
+                    "ci_low": "",
+                    "ci_high": "",
+                    "accuracy": "",
+                    "attempt_success_rate": "",
+                    "tokens_p50": "",
+                    "tokens_avg": "",
+                    "latency_p50_ms": "",
+                    "latency_p95_ms": "",
+                    "latency_avg_ms": "",
+                    "cost_avg_usd": "",
+                    "problems": "",
+                    "solved": "",
+                    "diagnostic_key": key,
+                    "diagnostic_status": str(value.get("status", "")),
+                    "value_text": str(value.get("source", value.get("ci_low", ""))),
+                }
+            )
+
+
+def analyze_exp5_repeats(
+    *,
+    log_dir: Path,
+    manifest_path: Path,
+    bootstrap_resamples: int,
+    seed: int,
+) -> Dict[str, Any]:
+    run_modes = _load_run_modes(manifest_path)
+    runs, warnings = _collect_runs(log_dir=log_dir, run_modes=run_modes)
+
+    rng = np.random.default_rng(seed)
+    runs_by_arm = _group_by_arm(runs)
+    arm_rows = _aggregate_by_arm(
+        runs_by_arm=runs_by_arm,
+        rng=rng,
+        n_resamples=bootstrap_resamples,
+    )
+    paired_rows = _paired_delta_rows(
+        runs=runs,
+        rng=rng,
+        n_resamples=bootstrap_resamples,
+    )
+    graph_diagnostics = _build_graph_diagnostics(log_dir=log_dir, runs=runs)
+    claim_gates = _build_claim_gates(
+        graph_diagnostics=graph_diagnostics,
+        paired_rows=paired_rows,
+    )
+    return {
+        "runs": runs,
+        "warnings": warnings,
+        "arm_rows": arm_rows,
+        "paired_rows": paired_rows,
+        "graph_diagnostics": graph_diagnostics,
+        "claim_gates": claim_gates,
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -693,40 +1189,35 @@ def main() -> None:
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    run_modes = _load_run_modes(manifest_path)
-    runs, warnings = _collect_runs(log_dir=log_dir, run_modes=run_modes)
-
-    rng = np.random.default_rng(args.seed)
-    runs_by_arm = _group_by_arm(runs)
-    arm_rows = _aggregate_by_arm(
-        runs_by_arm=runs_by_arm,
-        rng=rng,
-        n_resamples=args.bootstrap_resamples,
-    )
-    paired_rows = _paired_delta_rows(
-        runs=runs,
-        rng=rng,
-        n_resamples=args.bootstrap_resamples,
+    analysis = analyze_exp5_repeats(
+        log_dir=log_dir,
+        manifest_path=manifest_path,
+        bootstrap_resamples=args.bootstrap_resamples,
+        seed=args.seed,
     )
 
     _write_markdown(
         out_path=out_md,
-        runs=runs,
-        arm_rows=arm_rows,
-        paired_rows=paired_rows,
-        warnings=warnings,
+        runs=analysis["runs"],
+        arm_rows=analysis["arm_rows"],
+        paired_rows=analysis["paired_rows"],
+        graph_diagnostics=analysis["graph_diagnostics"],
+        claim_gates=analysis["claim_gates"],
+        warnings=analysis["warnings"],
     )
     _write_csv(
         out_path=out_csv,
-        runs=runs,
-        arm_rows=arm_rows,
-        paired_rows=paired_rows,
+        runs=analysis["runs"],
+        arm_rows=analysis["arm_rows"],
+        paired_rows=analysis["paired_rows"],
+        graph_diagnostics=analysis["graph_diagnostics"],
+        claim_gates=analysis["claim_gates"],
     )
 
     print(f"Markdown report written to: {out_md}")
     print(f"CSV report written to: {out_csv}")
-    if warnings:
-        print(f"Warnings: {len(warnings)}")
+    if analysis["warnings"]:
+        print(f"Warnings: {len(analysis['warnings'])}")
 
 
 if __name__ == "__main__":
