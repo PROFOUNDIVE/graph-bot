@@ -256,6 +256,69 @@ def test_retrieve_paths(adapter):
     assert "target query" in result.concatenated_context.lower()
 
 
+def test_retrieve_paths_returns_multi_node_path_when_edges_are_used(tmp_path):
+    metagraph_path = tmp_path / "metagraph.json"
+    with patch("graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path):
+        adapter = GraphRAGAdapter(use_edges=True)
+
+    tree = ReasoningTree(
+        tree_id="t-edge",
+        root_id="seed",
+        nodes=[
+            ReasoningNode(node_id="seed", text="target seed context", type="thought"),
+            ReasoningNode(node_id="child", text="followup child", type="thought"),
+        ],
+        edges=[ReasoningEdge(src="seed", dst="child")],
+        provenance={"task": "test-task"},
+    )
+    adapter.insert_trees([tree])
+
+    graph = adapter.export_graph()
+    seed_meta_id = next(
+        node.node_id for node in graph.nodes if node.text == "target seed context"
+    )
+    child_meta_id = next(
+        node.node_id for node in graph.nodes if node.text == "followup child"
+    )
+
+    query = UserQuery(
+        id="q-edge", question="target seed", metadata={"task": "test-task"}
+    )
+    result = adapter.retrieve_paths(query, k=1)
+
+    assert result.paths[0].node_ids == [seed_meta_id, child_meta_id]
+
+
+def test_retrieve_paths_without_edges_keeps_single_node_paths(tmp_path):
+    metagraph_path = tmp_path / "metagraph.json"
+    with patch("graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path):
+        adapter = GraphRAGAdapter(use_edges=False)
+
+    tree = ReasoningTree(
+        tree_id="t-no-edge",
+        root_id="seed",
+        nodes=[
+            ReasoningNode(node_id="seed", text="target seed context", type="thought"),
+            ReasoningNode(node_id="child", text="followup child", type="thought"),
+        ],
+        edges=[ReasoningEdge(src="seed", dst="child")],
+        provenance={"task": "test-task"},
+    )
+    adapter.insert_trees([tree])
+
+    graph = adapter.export_graph()
+    seed_meta_id = next(
+        node.node_id for node in graph.nodes if node.text == "target seed context"
+    )
+
+    query = UserQuery(
+        id="q-no-edge", question="target seed", metadata={"task": "test-task"}
+    )
+    result = adapter.retrieve_paths(query, k=1)
+
+    assert result.paths[0].node_ids == [seed_meta_id]
+
+
 def _insert_multi_task_retrieval_fixture(adapter: GraphRAGAdapter) -> None:
     algebra_node = ReasoningNode(
         node_id="a1", text="shared algebra pattern", type="thought"
