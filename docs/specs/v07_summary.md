@@ -180,7 +180,7 @@ docs(specs): add v0.7.0 architecture summary
 ✅ **No secrets**: Clean scan of submodules  
 ✅ **No regression**: Existing modes unchanged
 
-## v0.7.1 Patch Notes
+## v0.7.2 Patch Notes
 
-- Bot prompt parity fix (Game24 bot mode now uses Meta-Reasoner structure)
-- Latency p50/p95 test assertions added
+- Traversal telemetry is split explicitly from persisted-edge growth for EXP5 claim gating
+- Seeded Gate 0 validation and canonical postfix rerun workflow are documented for v0.7.2

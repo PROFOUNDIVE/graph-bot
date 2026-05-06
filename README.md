@@ -2,7 +2,7 @@
 
 Research prototype for **Non-parametric Continual Learning** using persistent reasoning graphs.
 
-> **Status:** v0.6.0 (Active Research)
+> **Status:** v0.7.2 (Active Research)
 > **Paper:** Graph-BoT: Amortizing Reasoning Costs via Persistent Memory (Work in Progress)
 
 ## Overview

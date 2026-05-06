@@ -1,7 +1,7 @@
 # EXP5 Issues Verification
 
 Checked against:
-- `outputs/exp5_report_v0.7.1.md`
+- `outputs/exp5_report_v0.7.2.md`
 - `src/graph_bot/pipelines/stream_loop.py`
 - `src/graph_bot/adapters/graphrag.py`
 - `src/graph_bot/tasks/game24.py`

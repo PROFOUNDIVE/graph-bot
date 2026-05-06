@@ -1,8 +1,8 @@
-# EXP5 Issue Resolution (v0.7.1)
+# EXP5 Issue Resolution (v0.7.2)
 
 ## Scope
 
-This document validates the three EXP5 findings from `outputs/exp5_report_v0.7.1.md`, identifies gaps in the original analysis, and records production fixes applied in code.
+This document validates the three EXP5 findings from `outputs/exp5_report_v0.7.2.md`, identifies gaps in the original analysis, and records production fixes applied in code.
 
 Claim-level note for Week19-safe reporting: the old graph-structure failure should
 be interpreted as source-mixed / mismeasured evidence, not as a proven graph
