@@ -477,35 +477,36 @@ class GraphRAGAdapter:
                     canonical_index[canonical_key] = node_id
                     node_id_map[node.node_id] = node_id
 
-            for edge in tree.edges:
-                src = node_id_map.get(edge.src)
-                dst = node_id_map.get(edge.dst)
-                if src is None and edge.src in node_index:
-                    src = edge.src
-                if dst is None and edge.dst in node_index:
-                    dst = edge.dst
-                if not src or not dst:
-                    continue
-                key = (src, dst)
-                if key in edge_index:
-                    existing_edge = edge_index[key]
-                    existing_edge.attributes = _ensure_edge_attributes(
-                        existing_edge.attributes, task=task
-                    )
-                    stats = existing_edge.attributes["stats"]
-                    stats["n_traverse"] = int(stats.get("n_traverse", 0)) + 1
-                else:
-                    attributes = _ensure_edge_attributes(edge.attributes, task=task)
-                    stats = attributes["stats"]
-                    stats["n_traverse"] = int(stats.get("n_traverse", 0)) + 1
-                    edge_index[key] = ReasoningEdge(
-                        src=src,
-                        dst=dst,
-                        relation=edge.relation,
-                        attributes=attributes,
-                    )
+            if self.use_edges:
+                for edge in tree.edges:
+                    src = node_id_map.get(edge.src)
+                    dst = node_id_map.get(edge.dst)
+                    if src is None and edge.src in node_index:
+                        src = edge.src
+                    if dst is None and edge.dst in node_index:
+                        dst = edge.dst
+                    if not src or not dst:
+                        continue
+                    key = (src, dst)
+                    if key in edge_index:
+                        existing_edge = edge_index[key]
+                        existing_edge.attributes = _ensure_edge_attributes(
+                            existing_edge.attributes, task=task
+                        )
+                        stats = existing_edge.attributes["stats"]
+                        stats["n_traverse"] = int(stats.get("n_traverse", 0)) + 1
+                    else:
+                        attributes = _ensure_edge_attributes(edge.attributes, task=task)
+                        stats = attributes["stats"]
+                        stats["n_traverse"] = int(stats.get("n_traverse", 0)) + 1
+                        edge_index[key] = ReasoningEdge(
+                            src=src,
+                            dst=dst,
+                            relation=edge.relation,
+                            attributes=attributes,
+                        )
 
-            if not tree.edges and len(tree.nodes) >= 2 and not edge_index:
+            if self.use_edges and not tree.edges and len(tree.nodes) >= 2 and not edge_index:
                 root_node_id = tree.root_id
                 if root_node_id not in node_id_map:
                     root_node_id = tree.nodes[0].node_id
