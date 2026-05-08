@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from graph_bot.tools.python_executor import run_python  # pyright: ignore[reportMissingImports]
+from graph_bot.tools.python_executor import (
+    run_python,
+)  # pyright: ignore[reportMissingImports]
 
 
 def test_run_python_blocks_banlist_before_execution() -> None:

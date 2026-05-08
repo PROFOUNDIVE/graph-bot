@@ -25,6 +25,7 @@ class _StubChatClient:
 class _RecordingAdapter:
     def __init__(self) -> None:
         self.inserted_trees = []
+        self.use_edges = False
 
     def insert_trees(self, trees):
         self.inserted_trees.extend(trees)

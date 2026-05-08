@@ -7,7 +7,7 @@ import signal
 import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,21 @@ MODE_ALIASES: dict[str, tuple[str, bool | None]] = {
 }
 
 
+class _ProblemMetadata(TypedDict):
+    run_id: str
+    mode: str
+    seed: int | None
+    resample_id: str | None
+    provider: str
+    model: str
+    validator_mode: str
+    distiller: str
+    retrieval_backend: str
+    cost_scope: str
+    uses_graph_edges: bool
+    uses_persistent_memory: bool
+
+
 class Game24Problem(BaseModel):
     """Game of 24 problem format."""
 
@@ -81,6 +96,51 @@ def _resolve_mode_alias(mode: str, use_edges: bool | None) -> tuple[str, bool | 
     if forced_use_edges is None:
         return resolved_mode, use_edges
     return resolved_mode, forced_use_edges
+
+
+def _uses_graph_edges(public_mode: str, effective_use_edges: bool | None) -> bool:
+    return public_mode == "graph_bot" and effective_use_edges is True
+
+
+def _uses_persistent_memory(public_mode: str, resolved_mode: str) -> bool:
+    public_capability = MODE_CAPABILITIES.get(public_mode)
+    if public_capability is not None:
+        return bool(public_capability["updates_memory"])
+
+    resolved_capability = MODE_CAPABILITIES.get(resolved_mode)
+    if resolved_capability is None:
+        return False
+    return bool(resolved_capability["updates_memory"])
+
+
+def _build_problem_metadata(
+    *,
+    run_id: str,
+    requested_mode: str,
+    resolved_mode: str,
+    effective_use_edges: bool | None,
+    provider: str,
+    model: str,
+    validator_mode: str,
+    distiller_mode: str,
+    retrieval_backend: str,
+) -> _ProblemMetadata:
+    return {
+        "run_id": run_id,
+        "mode": requested_mode,
+        "seed": None,
+        "resample_id": None,
+        "provider": provider,
+        "model": model,
+        "validator_mode": validator_mode,
+        "distiller": distiller_mode,
+        "retrieval_backend": retrieval_backend,
+        "cost_scope": "llm_api_cost_usd_problem_row",
+        "uses_graph_edges": _uses_graph_edges(requested_mode, effective_use_edges),
+        "uses_persistent_memory": _uses_persistent_memory(
+            requested_mode, resolved_mode
+        ),
+    }
 
 
 def load_game24_problems(file_path: Path) -> List[Game24Problem]:
@@ -124,6 +184,24 @@ def run_continual_stream(
 
     requested_mode = mode or settings.mode
     resolved_mode, resolved_use_edges = _resolve_mode_alias(requested_mode, use_edges)
+    effective_use_edges = (
+        resolved_use_edges if resolved_use_edges is not None else settings.use_edges
+    )
+    active_retrieval_backend = retrieval_backend or settings.retrieval_backend
+    actual_distiller_mode = (
+        distiller_mode or settings.distiller_mode or "rulebased"
+    ).lower()
+    problem_metadata = _build_problem_metadata(
+        run_id=run_id,
+        requested_mode=requested_mode,
+        resolved_mode=resolved_mode,
+        effective_use_edges=effective_use_edges,
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        validator_mode=validator_mode,
+        distiller_mode=actual_distiller_mode,
+        retrieval_backend=active_retrieval_backend,
+    )
 
     task_spec = registry.get_task(task)
     problems = list(task_spec.load_problems(problems_file))
@@ -134,13 +212,12 @@ def run_continual_stream(
         mode=resolved_mode,
         use_edges=resolved_use_edges,
         policy_id=policy_id,
-        retrieval_backend=retrieval_backend,
+        retrieval_backend=active_retrieval_backend,
         cross_task_retrieval=cross_task_retrieval,
     )
     validator = get_validator(validator_mode, validator_model)
     if distiller is None:
-        actual_mode = (distiller_mode or settings.distiller_mode or "rulebased").lower()
-        distiller = get_distiller(actual_mode)
+        distiller = get_distiller(actual_distiller_mode)
     metrics = StreamMetricsLogger(out_dir=metrics_out_dir, run_id=run_id)
 
     # Manifest Integration
@@ -179,9 +256,6 @@ def run_continual_stream(
 
                 active_mode = resolved_mode
                 active_policy_id = policy_id or settings.policy_id
-                active_retrieval_backend = (
-                    retrieval_backend or settings.retrieval_backend
-                )
                 mode_capability = MODE_CAPABILITIES.get(active_mode)
                 if mode_capability is None:
                     supported_modes = ", ".join(sorted(MODE_CAPABILITIES))
@@ -503,6 +577,7 @@ def run_continual_stream(
                     success_rate = (1.0 / attempts_used) if solved else 0.0
 
                     problem_metrics = StreamProblemMetrics(
+                        **problem_metadata,
                         t=t,
                         problem_id=problem_id,
                         solved=solved,
@@ -576,6 +651,7 @@ def run_continual_stream(
                         }
                     )
                     problem_metrics = StreamProblemMetrics(
+                        **problem_metadata,
                         t=t,
                         problem_id=problem_id,
                         solved=False,
@@ -634,6 +710,7 @@ def run_continual_stream(
                         }
                     )
                     problem_metrics = StreamProblemMetrics(
+                        **problem_metadata,
                         t=t,
                         problem_id=problem_id,
                         solved=False,

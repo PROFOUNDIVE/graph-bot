@@ -30,7 +30,9 @@ def _run_seeded_stream(
     )
 
     metrics_dir = tmp_path / ("metrics_edges" if use_edges else "metrics_no_edges")
-    metagraph_path = tmp_path / ("seeded_edges.json" if use_edges else "seeded_no_edges.json")
+    metagraph_path = tmp_path / (
+        "seeded_edges.json" if use_edges else "seeded_no_edges.json"
+    )
     write_task12_seeded_metagraph(metagraph_path)
 
     old_provider = settings.llm_provider
@@ -58,7 +60,9 @@ def _run_seeded_stream(
             )
 
         with (
-            patch("graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path),
+            patch(
+                "graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path
+            ),
             patch(
                 "graph_bot.adapters.mock_client.MockLLMClient.chat",
                 side_effect=mocked_chat,
@@ -67,7 +71,11 @@ def _run_seeded_stream(
             run_continual_stream(
                 problems_file=problems_file,
                 metrics_out_dir=metrics_dir,
-                run_id="test_task12_seeded_edges" if use_edges else "test_task12_seeded_no_edges",
+                run_id=(
+                    "test_task12_seeded_edges"
+                    if use_edges
+                    else "test_task12_seeded_no_edges"
+                ),
                 max_problems=1,
                 use_edges=use_edges,
                 mode="graph_bot",

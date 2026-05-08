@@ -78,4 +78,3 @@ def test_stream_and_amortize_cli(tmp_path, mock_settings, monkeypatch):
     header_line = csv_content.splitlines()[0]
     assert "latency_ms_p50" in header_line
     assert "latency_ms_p95" in header_line
-

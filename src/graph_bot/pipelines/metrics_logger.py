@@ -96,6 +96,7 @@ class StreamMetricsLogger:
         p95_latency = None
         if self._latency_history_ms:
             data = sorted(self._latency_history_ms)
+
             def _percentile(vals: list[float], q: float) -> float:
                 if not vals:
                     return None  # type: ignore
@@ -110,6 +111,7 @@ class StreamMetricsLogger:
                     return vals[f] * (1 - c) + vals[f + 1] * c
                 else:
                     return vals[f]
+
             p50_latency = _percentile(data, 50)
             p95_latency = _percentile(data, 95)
 

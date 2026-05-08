@@ -122,13 +122,6 @@ class LLMDistiller(AbstractDistiller):
         task = _extract_task(tree)
         steps_summary = _extract_steps_summary(tree)
         final_candidate = _extract_final_candidate(tree, answer_text)
-        distill_input = _extract_distill_input(
-            tree,
-            task=task,
-            query=query,
-            steps_summary=steps_summary,
-            final_candidate=final_candidate,
-        )
 
         fallback_text = _distill_trace_text(
             task=task,

@@ -30,6 +30,18 @@ class StreamCallMetrics(BaseModel):
 
 
 class StreamProblemMetrics(BaseModel):
+    run_id: str
+    mode: str
+    seed: Optional[int]
+    resample_id: Optional[str]
+    provider: str
+    model: str
+    validator_mode: str
+    distiller: str
+    retrieval_backend: str
+    cost_scope: str
+    uses_graph_edges: bool
+    uses_persistent_memory: bool
     t: int
     problem_id: str
     solved: bool

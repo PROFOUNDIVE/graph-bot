@@ -173,11 +173,11 @@ docs(specs): add v0.7.0 architecture summary
 
 ## Success Criteria Verification
 
-✅ **Single harness**: `graph-bot stream` runs all baselines  
-✅ **Single validator**: `Game24Validator` validates all modes  
-✅ **Single log schema**: 4 JSONL files per run  
-✅ **In-process**: No conda environment switching  
-✅ **No secrets**: Clean scan of submodules  
+✅ **Single harness**: `graph-bot stream` runs all baselines
+✅ **Single validator**: `Game24Validator` validates all modes
+✅ **Single log schema**: 4 JSONL files per run
+✅ **In-process**: No conda environment switching
+✅ **No secrets**: Clean scan of submodules
 ✅ **No regression**: Existing modes unchanged
 
 ## v0.7.2 Patch Notes

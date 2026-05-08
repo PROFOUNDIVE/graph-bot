@@ -506,7 +506,12 @@ class GraphRAGAdapter:
                             attributes=attributes,
                         )
 
-            if self.use_edges and not tree.edges and len(tree.nodes) >= 2 and not edge_index:
+            if (
+                self.use_edges
+                and not tree.edges
+                and len(tree.nodes) >= 2
+                and not edge_index
+            ):
                 root_node_id = tree.root_id
                 if root_node_id not in node_id_map:
                     root_node_id = tree.nodes[0].node_id

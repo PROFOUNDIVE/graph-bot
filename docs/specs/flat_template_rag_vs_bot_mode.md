@@ -1,7 +1,7 @@
 # Mode Comparison: Flat-template-RAG vs Bot Mode
 
-**Document Version:** 1.0  
-**Last Updated:** 2026-02-26  
+**Document Version:** 1.0
+**Last Updated:** 2026-02-26
 **Scope:** `src/graph_bot/pipelines/stream_loop.py`, `src/graph_bot/adapters/graphrag.py`, `src/graph_bot/tasks/`
 
 ---

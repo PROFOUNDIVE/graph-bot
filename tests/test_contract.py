@@ -15,6 +15,7 @@ from graph_bot.datatypes import (
     ReasoningEdge,
     ReasoningNode,
     RetrievalResult,
+    StreamProblemMetrics,
     UserQuery,
 )
 from graph_bot.eval.validators import BaseValidator
@@ -197,6 +198,7 @@ def _run_stream_with_seeded_graph(
     edges: list[ReasoningEdge],
     mode: str = "graph_bot",
     distiller: AbstractDistiller | None = None,
+    distiller_mode: str | None = None,
     use_edges: bool | None = True,
     max_problems: int = 1,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -223,7 +225,6 @@ def _run_stream_with_seeded_graph(
         settings.retrieval_backend = "sparse_jaccard"
         settings.top_k_paths = 1
         settings.execution_timeout_sec = 1.0
-        active_distiller = distiller or _PassthroughDistiller()
 
         def mocked_chat(system, user, temperature):
             del system, user, temperature
@@ -245,15 +246,27 @@ def _run_stream_with_seeded_graph(
                 side_effect=mocked_chat,
             ),
         ):
-            run_continual_stream(
-                problems_file=problems_file,
-                metrics_out_dir=metrics_dir,
-                run_id=run_id,
-                max_problems=max_problems,
-                use_edges=use_edges,
-                mode=mode,
-                distiller=active_distiller,
-            )
+            if distiller_mode is None:
+                run_continual_stream(
+                    problems_file=problems_file,
+                    metrics_out_dir=metrics_dir,
+                    run_id=run_id,
+                    max_problems=max_problems,
+                    use_edges=use_edges,
+                    mode=mode,
+                    distiller=distiller or _PassthroughDistiller(),
+                )
+            else:
+                run_continual_stream(
+                    problems_file=problems_file,
+                    metrics_out_dir=metrics_dir,
+                    run_id=run_id,
+                    max_problems=max_problems,
+                    use_edges=use_edges,
+                    mode=mode,
+                    distiller=distiller,
+                    distiller_mode=distiller_mode,
+                )
     finally:
         settings.llm_provider = old_provider
         settings.llm_model = old_model
@@ -274,6 +287,228 @@ def _run_stream_with_seeded_graph(
         ]
 
     return problems, token_events
+
+
+def test_stream_problem_metrics_fairness_metadata_contract() -> None:
+    expected_metadata = {
+        "run_id": "test_g1_fairness_contract",
+        "mode": "graph_bot",
+        "seed": None,
+        "resample_id": None,
+        "provider": "mock",
+        "model": "gpt-4o-mini",
+        "validator_mode": "oracle",
+        "distiller": "rulebased",
+        "retrieval_backend": "sparse_jaccard",
+        "cost_scope": "llm_api_cost_usd_problem_row",
+        "uses_graph_edges": True,
+        "uses_persistent_memory": True,
+    }
+
+    event = StreamProblemMetrics(
+        t=1,
+        problem_id="test_g1_fairness_contract_q1",
+        solved=True,
+        attempts=1,
+        solved_attempt=1,
+        attempt_success_rate=1.0,
+        llm_calls=1,
+        tokens_total=15,
+        latency_total_ms=10.0,
+        api_cost_usd=0.00001,
+        retrieval_hit=True,
+        reuse_count=2,
+        retrieval_path_node_cardinality=2,
+        retrieval_used_stored_edges=True,
+        memory_n_nodes=3,
+        memory_n_edges=2,
+        contamination_rate=None,
+        poisoned_update_rate=None,
+        **expected_metadata,
+    )
+
+    payload = event.model_dump()
+    for key, expected in expected_metadata.items():
+        assert key in payload
+        assert payload[key] == expected
+
+
+def test_stream_contract_emits_g1_fairness_metadata(tmp_path: Path) -> None:
+    run_id = "test_g1_fairness_metadata"
+    nodes = [
+        ReasoningNode(
+            node_id="seed",
+            text="1 2 3 4 24 retrieval root",
+            type="thought",
+            attributes={"task": "game24"},
+        ),
+        ReasoningNode(
+            node_id="child",
+            text="followup child",
+            type="thought",
+            attributes={"task": "game24"},
+        ),
+    ]
+    edges = [ReasoningEdge(src="seed", dst="child")]
+
+    problems, _ = _run_stream_with_seeded_graph(
+        tmp_path,
+        run_id=run_id,
+        nodes=nodes,
+        edges=edges,
+        mode="graph_bot",
+        distiller_mode="rulebased",
+    )
+
+    assert len(problems) == 1
+    problem = problems[0]
+    expected_metadata = {
+        "run_id": run_id,
+        "mode": "graph_bot",
+        "seed": None,
+        "resample_id": None,
+        "provider": "mock",
+        "model": "gpt-4o-mini",
+        "validator_mode": "oracle",
+        "distiller": "rulebased",
+        "retrieval_backend": "sparse_jaccard",
+        "cost_scope": "llm_api_cost_usd_problem_row",
+        "uses_graph_edges": True,
+        "uses_persistent_memory": True,
+    }
+    for key, expected in expected_metadata.items():
+        assert key in problem
+        assert problem[key] == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "use_edges", "expected_uses_graph_edges"),
+    [
+        ("graph_bot", True, True),
+        ("graph_bot_no_edges", True, False),
+        ("flat_template_rag", True, False),
+    ],
+)
+def test_stream_mode_rows_emit_isolated_g1_capabilities(
+    tmp_path: Path,
+    mode: str,
+    use_edges: bool,
+    expected_uses_graph_edges: bool,
+) -> None:
+    run_id = f"test_g1_mode_{mode}"
+    nodes = [
+        ReasoningNode(
+            node_id="seed",
+            text="1 2 3 4 24 retrieval root",
+            type="thought",
+            attributes={"task": "game24"},
+        ),
+        ReasoningNode(
+            node_id="child",
+            text="followup child",
+            type="thought",
+            attributes={"task": "game24"},
+        ),
+    ]
+    edges = [ReasoningEdge(src="seed", dst="child")]
+
+    problems, _ = _run_stream_with_seeded_graph(
+        tmp_path,
+        run_id=run_id,
+        nodes=nodes,
+        edges=edges,
+        mode=mode,
+        use_edges=use_edges,
+        distiller_mode="rulebased",
+    )
+
+    assert len(problems) == 1
+    problem = problems[0]
+    assert problem["mode"] == mode
+    assert problem["uses_graph_edges"] is expected_uses_graph_edges
+    assert problem["uses_persistent_memory"] is True
+
+
+def test_stream_exception_problem_row_emits_g1_fairness_metadata(
+    tmp_path: Path,
+) -> None:
+    run_id = "test_g1_exception_metadata"
+    problems_file = tmp_path / "test_g1_exception_metadata_problems.jsonl"
+    problems_file.write_text(
+        json.dumps({"id": "test_q_exception_g1", "numbers": [1, 2, 3, 4], "target": 24})
+        + "\n",
+        encoding="utf-8",
+    )
+    metrics_dir = tmp_path / "test_g1_exception_metadata_metrics"
+    metagraph_path = tmp_path / "test_g1_exception_metadata_metagraph.json"
+    _write_metagraph(metagraph_path, nodes=[], edges=[])
+
+    old_provider = settings.llm_provider
+    old_model = settings.llm_model
+    old_retrieval_backend = settings.retrieval_backend
+    old_timeout = settings.execution_timeout_sec
+    old_distiller_mode = settings.distiller_mode
+
+    try:
+        settings.llm_provider = "mock"
+        settings.llm_model = "gpt-4o-mini"
+        settings.retrieval_backend = "sparse_jaccard"
+        settings.execution_timeout_sec = 1.0
+        settings.distiller_mode = "rulebased"
+
+        with (
+            patch(
+                "graph_bot.adapters.graphrag.settings.metagraph_path", metagraph_path
+            ),
+            patch(
+                "graph_bot.adapters.graphrag.GraphRAGAdapter.retrieve_paths",
+                side_effect=RuntimeError("test injected retrieval failure"),
+            ),
+        ):
+            results = run_continual_stream(
+                problems_file=problems_file,
+                metrics_out_dir=metrics_dir,
+                run_id=run_id,
+                max_problems=1,
+                mode="graph_bot",
+                use_edges=True,
+                distiller_mode="rulebased",
+            )
+    finally:
+        settings.llm_provider = old_provider
+        settings.llm_model = old_model
+        settings.retrieval_backend = old_retrieval_backend
+        settings.execution_timeout_sec = old_timeout
+        settings.distiller_mode = old_distiller_mode
+
+    assert results[0].get("error") == "RuntimeError"
+
+    problems_path = metrics_dir / f"{run_id}.problems.jsonl"
+    with problems_path.open("r", encoding="utf-8") as f:
+        problem_rows = [
+            cast(dict[str, Any], json.loads(line)) for line in f if line.strip()
+        ]
+    exception_row = next(
+        row for row in problem_rows if row["problem_id"] == "test_q_exception_g1"
+    )
+
+    expected_metadata = {
+        "run_id": run_id,
+        "mode": "graph_bot",
+        "seed": None,
+        "resample_id": None,
+        "provider": "mock",
+        "model": "gpt-4o-mini",
+        "validator_mode": "oracle",
+        "distiller": "rulebased",
+        "retrieval_backend": "sparse_jaccard",
+        "cost_scope": "llm_api_cost_usd_problem_row",
+        "uses_graph_edges": True,
+        "uses_persistent_memory": True,
+    }
+    for key, expected in expected_metadata.items():
+        assert key in exception_row
+        assert exception_row[key] == expected
 
 
 @pytest.fixture(
